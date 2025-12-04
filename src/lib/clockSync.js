@@ -22,16 +22,16 @@
 /**
  * Safety offset in milliseconds for scheduling notes
  * This is jitter protection and must stay very small to meet latency targets
- * Ultra-low latency tuning: reduced from 5ms to 2ms for tighter scheduling
+ * STEP 2.2: Reduced to 1.0ms for ultra-low latency (configurable)
  */
-export const SAFETY_OFFSET_MS = 2; // 2ms safety offset
+export const SAFETY_OFFSET_MS = 1.0; // 1.0ms safety offset
 
 /**
  * Immediate playback threshold in seconds
  * If targetAudioTime is within this threshold of currentTime, play immediately
- * Ultra-low latency tuning: reduced from 3ms to 1ms for faster response
+ * STEP 2.2: Reduced to 0.5ms for ultra-low latency (configurable)
  */
-export const IMMEDIATE_PLAYBACK_THRESHOLD_SECONDS = 0.001; // 1ms
+export const IMMEDIATE_PLAYBACK_THRESHOLD_SECONDS = 0.0005; // 0.5ms
 
 /**
  * ClockSync class for managing room time and peer latency
@@ -53,9 +53,20 @@ export class ClockSync {
     /** @type {Map<string, number>} Peer ID -> pending ping timestamp */
     this.pendingPings = new Map();
     
-    /** @type {number} EMA smoothing factor (0.6 = 60% new sample, 40% previous) */
-    // Ultra-low latency tuning: increased from 0.3 to 0.6 for faster adaptation to network conditions
-    this.latencyAlpha = 0.6;
+    /** @type {Map<string, number[]>} Peer ID -> array of recent RTT measurements (for median) */
+    this.recentRTTs = new Map();
+    
+    /** @type {Map<string, number>} Peer ID -> Kalman filter state (estimated latency) */
+    this.kalmanEstimates = new Map();
+    
+    /** @type {Map<string, number>} Peer ID -> Kalman filter uncertainty */
+    this.kalmanUncertainty = new Map();
+    
+    /** @type {number} Maximum RTT history to keep per peer */
+    this.maxRTTHistory = 5;
+    
+    /** @type {number} Spike rejection threshold (multiplier of median) */
+    this.spikeThreshold = 2.0; // Reject RTTs > 2x median
   }
 
   /**
@@ -109,22 +120,93 @@ export class ClockSync {
 
   /**
    * Update latency estimate for a peer
-   * This should be called after receiving a pong response
+   * STEP 2.3: Uses median of last 5 RTTs + Kalman-like smoothing + spike rejection
    * 
    * @param {string} peerId - Peer user ID
-   * @param {number} latencyMs - Measured latency in milliseconds
+   * @param {number} rttMs - Round-trip time in milliseconds (will be halved for one-way)
    */
-  updateLatency(peerId, latencyMs) {
+  updateLatency(peerId, rttMs) {
     if (!this.registeredPeers.has(peerId)) {
       console.warn(`[ClockSync] Updating latency for unregistered peer: ${peerId}`);
     }
     
-    // Use exponential moving average for smoother updates
-    const currentLatency = this.peerLatencies.get(peerId) || 50;
-    const alpha = this.latencyAlpha;
-    const smoothedLatency = currentLatency * (1 - alpha) + latencyMs * alpha;
+    // Store RTT history (we'll compute one-way latency from median RTT)
+    if (!this.recentRTTs.has(peerId)) {
+      this.recentRTTs.set(peerId, []);
+    }
+    const rttHistory = this.recentRTTs.get(peerId);
+    rttHistory.push(rttMs);
     
-    this.peerLatencies.set(peerId, smoothedLatency);
+    // Keep only last N measurements
+    if (rttHistory.length > this.maxRTTHistory) {
+      rttHistory.shift();
+    }
+    
+    // Compute median RTT (more robust than mean, rejects outliers)
+    const sortedRTTs = [...rttHistory].sort((a, b) => a - b);
+    const medianRTT = sortedRTTs[Math.floor(sortedRTTs.length / 2)];
+    
+    // Spike rejection: if current RTT is > 2x median, reject it
+    if (rttMs > medianRTT * this.spikeThreshold) {
+      // Reject spike - remove it from history
+      rttHistory.pop();
+      // Use previous median if we have enough history
+      if (rttHistory.length >= 3) {
+        const prevSorted = [...rttHistory].sort((a, b) => a - b);
+        const prevMedian = prevSorted[Math.floor(prevSorted.length / 2)];
+        // Continue with previous median
+        const oneWayLatency = prevMedian / 2;
+        this.applyKalmanFilter(peerId, oneWayLatency);
+        return;
+      }
+      // Not enough history, use current (even if spike)
+    }
+    
+    // Convert RTT to one-way latency
+    const oneWayLatency = medianRTT / 2;
+    
+    // Apply Kalman-like smoothing for stable estimates
+    this.applyKalmanFilter(peerId, oneWayLatency);
+  }
+  
+  /**
+   * Apply lightweight Kalman-like filter for latency estimation
+   * This provides smooth, stable estimates with low drift
+   * 
+   * @param {string} peerId - Peer user ID
+   * @param {number} measuredLatencyMs - Measured one-way latency
+   */
+  applyKalmanFilter(peerId, measuredLatencyMs) {
+    // Initialize Kalman state if needed
+    if (!this.kalmanEstimates.has(peerId)) {
+      this.kalmanEstimates.set(peerId, measuredLatencyMs);
+      this.kalmanUncertainty.set(peerId, 10.0); // Initial uncertainty: 10ms
+      this.peerLatencies.set(peerId, measuredLatencyMs);
+      return;
+    }
+    
+    const previousEstimate = this.kalmanEstimates.get(peerId);
+    const previousUncertainty = this.kalmanUncertainty.get(peerId);
+    
+    // Process noise (how much we expect latency to drift)
+    const processNoise = 0.5; // 0.5ms^2
+    
+    // Measurement noise (how much we trust the measurement)
+    const measurementNoise = 2.0; // 2ms^2
+    
+    // Prediction step: estimate drifts slightly
+    const predictedEstimate = previousEstimate;
+    const predictedUncertainty = previousUncertainty + processNoise;
+    
+    // Update step: combine prediction with measurement
+    const kalmanGain = predictedUncertainty / (predictedUncertainty + measurementNoise);
+    const newEstimate = predictedEstimate + kalmanGain * (measuredLatencyMs - predictedEstimate);
+    const newUncertainty = (1 - kalmanGain) * predictedUncertainty;
+    
+    // Update state
+    this.kalmanEstimates.set(peerId, newEstimate);
+    this.kalmanUncertainty.set(peerId, newUncertainty);
+    this.peerLatencies.set(peerId, newEstimate);
   }
 
   /**
@@ -156,6 +238,10 @@ export class ClockSync {
   removePeer(peerId) {
     this.registeredPeers.delete(peerId);
     this.peerLatencies.delete(peerId);
+    this.recentRTTs.delete(peerId);
+    this.kalmanEstimates.delete(peerId);
+    this.kalmanUncertainty.delete(peerId);
+    this.pendingPings.delete(peerId);
   }
 
   /**

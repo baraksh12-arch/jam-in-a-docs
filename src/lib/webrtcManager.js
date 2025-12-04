@@ -221,7 +221,7 @@ export class WebRTCManager {
       console.log(`[WebRTCManager] DataChannel opened with ${peerId}`);
       this.setConnectionState(peerId, 'connected');
       
-      // Start periodic ping messages (every 3 seconds)
+      // STEP 2.3: Start periodic ping messages (every 500ms for faster adaptation)
       if (this.clockSync) {
         this.startPingInterval(peerId);
       }
@@ -252,12 +252,13 @@ export class WebRTCManager {
     };
 
     // Handle incoming messages (ping/pong or jam events)
+    // STEP 2.4: Fast-path - move event handling to microtask to avoid blocking WebRTC queue
     dataChannel.onmessage = (event) => {
       try {
         const data = event.data;
         let parsed;
         
-        // Try to parse as JSON
+        // Try to parse as JSON (only once - fix double parsing)
         try {
           parsed = JSON.parse(data);
         } catch (e) {
@@ -267,7 +268,7 @@ export class WebRTCManager {
           return;
         }
 
-        // Check if it's a control message (ping/pong)
+        // Check if it's a control message (ping/pong) - handle synchronously (fast)
         if (parsed && typeof parsed === 'object' && (parsed.type === 'ping' || parsed.type === 'pong')) {
           if (this.clockSync) {
             const response = this.clockSync.handleIncomingControlMessage(parsed, peerId);
@@ -282,15 +283,24 @@ export class WebRTCManager {
           return; // Control message handled, don't process as jam event
         }
 
-        // Otherwise, try to deserialize as jam event
-        const jamEvent = deserializeEvent(data);
-        if (jamEvent) {
-          this.onJamEvent(jamEvent, peerId);
-        } else {
-          if (DEBUG_WEBRTC) {
-            console.warn(`[WebRTCManager] Failed to deserialize jam event from ${peerId}`);
+        // STEP 2.4: Move jam event handling to microtask to avoid blocking WebRTC message queue
+        // This ensures WebRTC can continue receiving messages while we process events
+        queueMicrotask(() => {
+          try {
+            // STEP 2.4: Fix double JSON parsing - pass parsed object directly
+            // deserializeEvent can accept either a string or already-parsed object
+            const jamEvent = deserializeEvent(parsed);
+            if (jamEvent) {
+              this.onJamEvent(jamEvent, peerId);
+            } else {
+              if (DEBUG_WEBRTC) {
+                console.warn(`[WebRTCManager] Failed to deserialize jam event from ${peerId}`);
+              }
+            }
+          } catch (error) {
+            console.error(`[WebRTCManager] Error handling jam event from ${peerId}:`, error);
           }
-        }
+        });
       } catch (error) {
         console.error(`[WebRTCManager] Error handling message from ${peerId}:`, error);
       }
@@ -507,7 +517,7 @@ export class WebRTCManager {
       return;
     }
 
-    // Send ping every 3 seconds
+    // STEP 2.3: Send ping every 500ms (reduced from 3000ms for faster adaptation)
     const intervalId = setInterval(() => {
       const dataChannel = this.dataChannels.get(peerId);
       if (dataChannel && dataChannel.readyState === 'open') {
@@ -518,7 +528,7 @@ export class WebRTCManager {
           console.error(`[WebRTCManager] Error sending ping to ${peerId}:`, error);
         }
       }
-    }, 3000);
+    }, 500);
 
     this.pingIntervals.set(peerId, intervalId);
   }

@@ -89,14 +89,26 @@ export function serializeEvent(event) {
 }
 
 /**
- * Deserialize a JSON string to jam event
+ * Deserialize a JSON string or already-parsed object to jam event
+ * STEP 2.4: Accepts either string or object to avoid double parsing
  * 
- * @param {string} raw - JSON string
+ * @param {string|Object} raw - JSON string or already-parsed object
  * @returns {JamEvent|null} Parsed event or null if invalid
  */
 export function deserializeEvent(raw) {
   try {
-    const event = JSON.parse(raw);
+    let event;
+    
+    // If already an object, use it directly (avoids double parsing)
+    if (typeof raw === 'object' && raw !== null) {
+      event = raw;
+    } else if (typeof raw === 'string') {
+      // Parse JSON string
+      event = JSON.parse(raw);
+    } else {
+      console.warn('Invalid input type for deserializeEvent:', typeof raw);
+      return null;
+    }
     
     if (isJamEvent(event)) {
       return event;

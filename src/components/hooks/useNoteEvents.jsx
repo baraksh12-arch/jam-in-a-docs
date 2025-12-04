@@ -122,6 +122,30 @@ export function useNoteEvents(roomId, userId, audioEngine, peers, room, onNoteAc
         return;
       }
 
+      // STEP 2.1: TRUE zero-delay immediate mode for drums
+      // Drums must not be scheduled at all - play immediately on arrival
+      // This removes the "ping-pong" feeling for percussive instruments
+      if (event.instrument === 'DRUMS') {
+        // Immediate playback for drums - bypass all scheduling
+        if (event.type === 'noteOn') {
+          audioEngine.playNote(event.instrument, event.note, event.velocity);
+          
+          // Trigger activity indicator for remote notes
+          if (onNoteActivity) {
+            onNoteActivity({
+              source: 'remote',
+              instrument: event.instrument,
+              note: event.note,
+              velocity: event.velocity ?? 100
+            });
+          }
+        } else if (event.type === 'noteOff') {
+          audioEngine.stopNote(event.instrument, event.note);
+        }
+        return; // Exit early - drums are done
+      }
+
+      // For tonal instruments (BASS, EP, GUITAR), use scheduling
       // Compute target audio time using clockSync
       let targetAudioTime = webrtcRef.current?.computeTargetAudioTime?.(
         event.roomTime,
@@ -136,16 +160,20 @@ export function useNoteEvents(roomId, userId, audioEngine, peers, room, onNoteAc
         // Fallback: play immediately
         if (event.type === 'noteOn') {
           audioEngine.playNote(event.instrument, event.note, event.velocity);
+          
+          // Trigger activity indicator for remote notes
+          if (onNoteActivity) {
+            onNoteActivity({
+              source: 'remote',
+              instrument: event.instrument,
+              note: event.note,
+              velocity: event.velocity ?? 100
+            });
+          }
         } else if (event.type === 'noteOff') {
           audioEngine.stopNote(event.instrument, event.note);
         }
         return;
-      }
-
-      // Psychoacoustic improvement: play drums slightly early for tighter feel
-      // This is perceptually acceptable and makes drums feel more in sync
-      if (event.instrument === 'DRUMS') {
-        targetAudioTime -= 0.002; // 2ms early
       }
 
       const currentTime = audioContext.currentTime;
@@ -157,6 +185,7 @@ export function useNoteEvents(roomId, userId, audioEngine, peers, room, onNoteAc
       
       const timeUntilPlay = targetAudioTime - currentTime;
 
+      // STEP 2.2: Tightened immediate threshold (0.5ms instead of 1ms)
       // If target time is in the past or very close (within threshold), play immediately
       if (timeUntilPlay <= IMMEDIATE_PLAYBACK_THRESHOLD_SECONDS) {
         // Play immediately (fallback case)
