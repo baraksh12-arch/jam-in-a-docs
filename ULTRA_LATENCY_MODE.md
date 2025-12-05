@@ -4,6 +4,17 @@
 
 ULTRA_LOW_LATENCY mode is a latency optimization mode that bypasses clock synchronization and scheduling to achieve the smallest possible latency for all instruments (DRUMS, BASS, EP, GUITAR). This mode is designed for scenarios where immediate responsiveness is more important than tight synchronization across long distances.
 
+## Event Bundling
+
+To reduce burst pressure and stabilize latency (especially for drums), outgoing jam events are bundled into single packets:
+
+- **ULTRA mode**: Events are bundled every **8ms** (~125 fps)
+- **SYNCED mode**: Events are bundled every **16ms** (~60 fps)
+
+The bundler maintains a queue of outgoing events and flushes them at regular intervals. This dramatically reduces the number of packets sent during rapid drum patterns while keeping latency very low.
+
+**Backwards compatibility**: Single events are sent as-is (no bundle wrapper), and the receiving side accepts both single events and bundles.
+
 ## How It Works
 
 ### Audio Engine Preloading
@@ -37,6 +48,19 @@ In ULTRA mode, all remote note events bypass clock synchronization:
 
 This eliminates scheduling overhead and latency compensation calculations.
 
+### Event Bundling
+
+Outgoing jam events are bundled to reduce burst pressure:
+
+- Events are queued in `JamEventBundler` and flushed at regular intervals
+- **ULTRA mode**: 8ms flush interval (~125 fps) - keeps latency very low
+- **SYNCED mode**: 16ms flush interval (~60 fps) - slightly higher latency for better batching
+- Single events are sent as-is (backwards compatible)
+- Multiple events are sent as a bundle object: `{ kind: 'bundle', events: [...] }`
+- Receiving side accepts both single events and bundles (handled by `normalizeIncomingJamPayload`)
+
+**Trade-off**: Slightly more deterministic latency (worst-case ~8ms for ULTRA) in exchange for much more stable performance under bursts, especially for drums.
+
 ## Files Involved
 
 ### Configuration
@@ -46,6 +70,9 @@ This eliminates scheduling overhead and latency compensation calculations.
 - `src/components/hooks/useAudioEngine.jsx` - Audio engine with warmup and fast envelopes
 - `src/components/hooks/useNoteEvents.jsx` - Note event handling with ULTRA mode bypass
 - `src/lib/clockSync.js` - Clock sync helper function
+- `src/lib/jamEventBundler.js` - Event bundling for reduced burst pressure
+- `src/lib/webrtcManager.js` - WebRTC manager with bundling integration
+- `src/lib/jamEventProtocol.js` - Event protocol with bundle normalization
 
 ### UI
 - `src/components/room/TopBar.jsx` - Visual latency mode indicator

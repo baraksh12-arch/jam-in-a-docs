@@ -275,3 +275,52 @@ export function createNoteOffEvent({ instrument, note, roomTime, senderId }) {
   };
 }
 
+/**
+ * Normalize incoming jam payload to an array of validated jam events
+ * 
+ * Handles three formats for backwards compatibility:
+ * 1. Single event object (existing behavior)
+ * 2. Array of events: [ { ... }, { ... } ]
+ * 3. Bundle object: { kind: 'bundle', events: [ { ... }, ... ] }
+ * 
+ * @param {any} payload - Incoming payload (already parsed JSON)
+ * @returns {JamEvent[]} Array of validated jam events (empty if invalid)
+ */
+export function normalizeIncomingJamPayload(payload) {
+  if (!payload || typeof payload !== 'object') {
+    return [];
+  }
+
+  // Case A: Bundle object with events array
+  if (payload.events && Array.isArray(payload.events)) {
+    const events = [];
+    for (const rawEvent of payload.events) {
+      const jamEvent = deserializeEvent(rawEvent);
+      if (jamEvent) {
+        events.push(jamEvent);
+      }
+    }
+    return events;
+  }
+
+  // Case B: Bare array of events
+  if (Array.isArray(payload)) {
+    const events = [];
+    for (const rawEvent of payload) {
+      const jamEvent = deserializeEvent(rawEvent);
+      if (jamEvent) {
+        events.push(jamEvent);
+      }
+    }
+    return events;
+  }
+
+  // Case C: Single event (existing behavior)
+  const jamEvent = deserializeEvent(payload);
+  if (jamEvent) {
+    return [jamEvent];
+  }
+
+  return [];
+}
+

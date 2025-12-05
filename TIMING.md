@@ -118,6 +118,21 @@ Jam events sent over DataChannel contain only:
 
 No extra debugging data or nested objects are sent over the DataChannel.
 
+## Event Bundling
+
+To reduce burst pressure and stabilize latency (especially for drums), outgoing jam events are bundled:
+
+- **ULTRA mode**: Events bundled every **8ms** (~125 fps)
+- **SYNCED mode**: Events bundled every **16ms** (~60 fps)
+
+**Implementation**: `src/lib/jamEventBundler.js` and `src/lib/webrtcManager.js`
+
+**Format**:
+- Single events: Sent as-is (backwards compatible)
+- Multiple events: Sent as `{ kind: 'bundle', events: [...] }`
+
+**Trade-off**: Worst-case added latency of ~8ms (ULTRA) or ~16ms (SYNCED) in exchange for dramatically reduced burst pressure and more stable performance during rapid drum patterns.
+
 ## Manual Testing
 
 ### Test Setup

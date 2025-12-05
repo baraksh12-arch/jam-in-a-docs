@@ -1,4 +1,6 @@
-import { deserializeEvent } from './jamEventProtocol';
+import { deserializeEvent, normalizeIncomingJamPayload } from './jamEventProtocol';
+import { JamEventBundler } from './jamEventBundler';
+import { CURRENT_LATENCY_MODE, LATENCY_MODES, BUNDLE_INTERVAL_MS_ULTRA, BUNDLE_INTERVAL_MS_SYNCED } from '../config/latencyMode';
 
 /**
  * Debug flag for WebRTC operations
@@ -70,6 +72,19 @@ export class WebRTCManager {
 
     /** @type {Map<string, number>} Peer ID -> ping interval ID */
     this.pingIntervals = new Map();
+
+    // Initialize event bundler
+    const flushIntervalMs = CURRENT_LATENCY_MODE === LATENCY_MODES.ULTRA
+      ? BUNDLE_INTERVAL_MS_ULTRA
+      : BUNDLE_INTERVAL_MS_SYNCED;
+    
+    this.bundler = new JamEventBundler({
+      flushIntervalMs,
+      sendBundle: (eventsArray) => this.sendBundle(eventsArray)
+    });
+    
+    // Start bundler immediately
+    this.bundler.start();
 
     // Listen for signaling messages
     this.signalingUnsubscribe = this.signaling.onSignal((signal) => {
@@ -287,14 +302,26 @@ export class WebRTCManager {
         // This ensures WebRTC can continue receiving messages while we process events
         queueMicrotask(() => {
           try {
-            // STEP 2.4: Fix double JSON parsing - pass parsed object directly
-            // deserializeEvent can accept either a string or already-parsed object
-            const jamEvent = deserializeEvent(parsed);
-            if (jamEvent) {
-              this.onJamEvent(jamEvent, peerId);
-            } else {
+            // Handle bundles: normalizeIncomingJamPayload handles single events, arrays, and bundle objects
+            const jamEvents = normalizeIncomingJamPayload(parsed);
+            
+            if (DEBUG_WEBRTC && jamEvents.length > 1) {
+              console.log('[WebRTCManager] Received bundle', {
+                kind: Array.isArray(parsed?.events) ? 'object+events' : Array.isArray(parsed) ? 'array' : 'single',
+                count: jamEvents.length
+              });
+            }
+            
+            // Process each event in the bundle (or single event)
+            for (const jamEvent of jamEvents) {
+              if (jamEvent) {
+                this.onJamEvent(jamEvent, peerId);
+              }
+            }
+            
+            if (jamEvents.length === 0) {
               if (DEBUG_WEBRTC) {
-                console.warn(`[WebRTCManager] Failed to deserialize jam event from ${peerId}`);
+                console.warn(`[WebRTCManager] Failed to deserialize jam events from ${peerId}`);
               }
             }
           } catch (error) {
@@ -379,18 +406,58 @@ export class WebRTCManager {
   /**
    * Send jam event to all connected peers
    * 
+   * Events are queued in the bundler and sent at regular intervals
+   * to reduce burst pressure and stabilize latency.
+   * 
    * @param {JamEvent} event - Jam event to send
    */
   sendJamEvent(event) {
-    const serialized = JSON.stringify(event);
+    // Add event to bundler queue (will be flushed at interval)
+    this.bundler.addEvent(event);
     
     if (DEBUG_WEBRTC) {
-      console.log(`[WebRTCManager] Sending jam event:`, {
+      console.log(`[WebRTCManager] Queued jam event for bundling:`, {
         type: event.type,
         instrument: event.instrument,
         note: event.note,
         senderId: event.senderId,
-        dataChannelsCount: this.dataChannels.size
+        queueSize: this.bundler.getQueueSize()
+      });
+    }
+  }
+
+  /**
+   * Send a bundle of events to all connected peers
+   * 
+   * This is called by the bundler at flush intervals.
+   * Handles backwards compatibility: single events sent as-is,
+   * multiple events sent as a bundle object.
+   * 
+   * @param {Array<JamEvent>} eventsArray - Array of jam events to send
+   */
+  sendBundle(eventsArray) {
+    if (eventsArray.length === 0) {
+      return; // Nothing to send
+    }
+
+    let serialized;
+    
+    // Backwards compatibility: single events sent as single JSON object
+    if (eventsArray.length === 1) {
+      serialized = JSON.stringify(eventsArray[0]);
+    } else {
+      // Multiple events: send as bundle object
+      serialized = JSON.stringify({
+        kind: 'bundle',
+        events: eventsArray
+      });
+    }
+    
+    if (DEBUG_WEBRTC) {
+      console.log('[WebRTCManager] Flushing bundle', {
+        count: eventsArray.length,
+        flushIntervalMs: this.bundler.flushIntervalMs,
+        format: eventsArray.length === 1 ? 'single' : 'bundle'
       });
     }
     
@@ -399,13 +466,13 @@ export class WebRTCManager {
       if (dataChannel.readyState === 'open') {
         try {
           if (DEBUG_WEBRTC) {
-            console.log(`[WebRTCManager] Sending to peer ${peerId}, channel state: ${dataChannel.readyState}`);
+            console.log(`[WebRTCManager] Sending bundle to peer ${peerId}, channel state: ${dataChannel.readyState}`);
           }
           dataChannel.send(serialized);
           sentCount++;
         } catch (error) {
           // Only log errors (not in hot path, but important for debugging)
-          console.error(`[WebRTCManager] Error sending jam event to ${peerId}:`, error);
+          console.error(`[WebRTCManager] Error sending bundle to ${peerId}:`, error);
         }
       } else {
         if (DEBUG_WEBRTC) {
@@ -415,7 +482,7 @@ export class WebRTCManager {
     });
     
     if (DEBUG_WEBRTC) {
-      console.log(`[WebRTCManager] Sent jam event to ${sentCount} peer(s)`);
+      console.log(`[WebRTCManager] Sent bundle to ${sentCount} peer(s)`);
     }
   }
 
@@ -550,6 +617,12 @@ export class WebRTCManager {
    * Cleanup and destroy all connections
    */
   destroy() {
+    // Stop and flush bundler
+    if (this.bundler) {
+      this.bundler.stop();
+      this.bundler = null;
+    }
+
     // Stop all ping intervals
     this.pingIntervals.forEach((intervalId, peerId) => {
       this.stopPingInterval(peerId);
