@@ -20,6 +20,16 @@
  */
 
 /**
+ * Helper to check if latency mode requires clock synchronization
+ * 
+ * @param {string} mode - Latency mode (from LATENCY_MODES)
+ * @returns {boolean} True if mode requires clock sync
+ */
+export function isLatencyModeSynced(mode) {
+  return mode === 'SYNCED';
+}
+
+/**
  * Safety offset in milliseconds for scheduling notes
  * This is jitter protection and must stay very small to meet latency targets
  * STEP 2.2: Reduced to 1.0ms for ultra-low latency (configurable)

@@ -17,6 +17,7 @@ import {
   SelectTrigger, 
   SelectValue 
 } from '@/components/ui/select';
+import { CURRENT_LATENCY_MODE, LATENCY_MODES } from '@/config/latencyMode';
 
 const KEYS = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 const SCALES = ['major', 'minor'];
@@ -48,6 +49,11 @@ export default function TopBar({ room, roomId, setBpm, setKey, setScale, toggleP
                 <h1 className="text-white font-bold">Room: {roomId}</h1>
                 <p className="text-gray-400 text-xs">Jam in a Docs</p>
               </div>
+            </div>
+
+            {/* Latency mode indicator */}
+            <div className="latency-badge bg-purple-500/20 border border-purple-400/30 rounded px-2 py-1 text-xs text-purple-300">
+              Latency: {CURRENT_LATENCY_MODE === LATENCY_MODES.ULTRA ? 'ULTRA LOW' : 'SYNCED'}
             </div>
 
             <Button

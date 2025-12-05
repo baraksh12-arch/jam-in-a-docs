@@ -1,4 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { CURRENT_LATENCY_MODE, LATENCY_MODES } from '@/config/latencyMode';
+
+/**
+ * Debug flag for latency mode logging
+ */
+const DEBUG_LATENCY = false;
 
 /**
  * Enhanced Web Audio Engine Hook
@@ -20,6 +26,7 @@ export function useAudioEngine() {
   const activeNotesRef = useRef(new Map());
   const metronomeIntervalRef = useRef(null);
   const nextMetronomeTimeRef = useRef(0);
+  const hasWarmedUpRef = useRef(false);
 
   useEffect(() => {
     const initAudio = async () => {
@@ -56,6 +63,81 @@ export function useAudioEngine() {
   const resumeAudioContext = useCallback(async () => {
     if (audioContextRef.current && audioContextRef.current.state === 'suspended') {
       await audioContextRef.current.resume();
+    }
+  }, []);
+
+  /**
+   * Warmup audio engine for ULTRA_LOW_LATENCY mode
+   * Pre-creates nodes and triggers very low-level sounds to wake up the audio graph
+   * This ensures the first real note doesn't incur node creation or context resume latency
+   */
+  const warmupAudioEngine = useCallback(() => {
+    if (!audioContextRef.current || hasWarmedUpRef.current) return;
+    
+    const ctx = audioContextRef.current;
+    const now = ctx.currentTime;
+    const warmupGain = 0.0001; // Very low, inaudible level
+    const warmupDuration = 0.005; // Very short duration (5ms)
+
+    try {
+      // Ensure context is resumed
+      if (ctx.state === 'suspended') {
+        ctx.resume();
+      }
+
+      // Warm up drums - trigger a very quiet kick
+      const kickOsc = ctx.createOscillator();
+      const kickGain = ctx.createGain();
+      kickOsc.frequency.setValueAtTime(150, now);
+      kickGain.gain.setValueAtTime(warmupGain, now);
+      kickGain.gain.exponentialRampToValueAtTime(0.00001, now + warmupDuration);
+      kickOsc.connect(kickGain).connect(masterGainRef.current);
+      kickOsc.start(now);
+      kickOsc.stop(now + warmupDuration);
+
+      // Warm up BASS - trigger a very quiet note
+      const bassFreq = 440 * Math.pow(2, (60 - 69) / 12); // C4
+      const bassOsc1 = ctx.createOscillator();
+      const bassGain = ctx.createGain();
+      bassOsc1.type = 'sawtooth';
+      bassOsc1.frequency.value = bassFreq;
+      bassGain.gain.setValueAtTime(warmupGain, now);
+      bassGain.gain.exponentialRampToValueAtTime(0.00001, now + warmupDuration);
+      bassOsc1.connect(bassGain).connect(masterGainRef.current);
+      bassOsc1.start(now);
+      bassOsc1.stop(now + warmupDuration);
+
+      // Warm up EP - trigger a very quiet note
+      const epFreq = 440 * Math.pow(2, (60 - 69) / 12); // C4
+      const epCarrier = ctx.createOscillator();
+      const epGain = ctx.createGain();
+      epCarrier.type = 'sine';
+      epCarrier.frequency.value = epFreq;
+      epGain.gain.setValueAtTime(warmupGain, now);
+      epGain.gain.exponentialRampToValueAtTime(0.00001, now + warmupDuration);
+      epCarrier.connect(epGain).connect(masterGainRef.current);
+      epCarrier.start(now);
+      epCarrier.stop(now + warmupDuration);
+
+      // Warm up GUITAR - trigger a very quiet note
+      const guitarFreq = 440 * Math.pow(2, (60 - 69) / 12); // C4
+      const guitarOsc = ctx.createOscillator();
+      const guitarGain = ctx.createGain();
+      guitarOsc.type = 'sawtooth';
+      guitarOsc.frequency.value = guitarFreq;
+      guitarGain.gain.setValueAtTime(warmupGain, now);
+      guitarGain.gain.exponentialRampToValueAtTime(0.00001, now + warmupDuration);
+      guitarOsc.connect(guitarGain).connect(masterGainRef.current);
+      guitarOsc.start(now);
+      guitarOsc.stop(now + warmupDuration);
+
+      hasWarmedUpRef.current = true;
+      
+      if (DEBUG_LATENCY) {
+        console.log('[AudioEngine] Warmup completed (ULTRA_LOW_LATENCY).');
+      }
+    } catch (error) {
+      console.warn('[AudioEngine] Warmup error (non-fatal):', error);
     }
   }, []);
 
@@ -206,6 +288,7 @@ export function useAudioEngine() {
     const ctx = audioContextRef.current;
     const now = when !== null ? when : ctx.currentTime;
     const volume = instrumentVolumesRef.current.BASS || 0.7;
+    const isUltraMode = CURRENT_LATENCY_MODE === LATENCY_MODES.ULTRA;
 
     // Dual oscillators for fat bass
     const osc1 = ctx.createOscillator();
@@ -227,8 +310,10 @@ export function useAudioEngine() {
     filter.frequency.exponentialRampToValueAtTime(frequency * 1.5, now + 0.1);
     filter.Q.value = 3;
 
+    // ULTRA mode: ultra-fast attack (0.001s), SYNCED mode: normal attack (0.01s)
+    const attackTime = isUltraMode ? 0.001 : 0.01;
     gain.gain.setValueAtTime(0, now);
-    gain.gain.linearRampToValueAtTime(volume * 0.4, now + 0.01);
+    gain.gain.linearRampToValueAtTime(volume * 0.4, now + attackTime);
     gain.gain.exponentialRampToValueAtTime(volume * 0.1, now + duration * 0.7);
     gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
 
@@ -259,6 +344,7 @@ export function useAudioEngine() {
     const ctx = audioContextRef.current;
     const now = when !== null ? when : ctx.currentTime;
     const volume = instrumentVolumesRef.current.EP || 0.7;
+    const isUltraMode = CURRENT_LATENCY_MODE === LATENCY_MODES.ULTRA;
 
     // FM-style electric piano
     const carrier = ctx.createOscillator();
@@ -278,8 +364,10 @@ export function useAudioEngine() {
     filter.type = 'lowpass';
     filter.frequency.value = frequency * 8;
 
+    // ULTRA mode: ultra-fast attack (0.001s), SYNCED mode: normal attack (0.01s)
+    const attackTime = isUltraMode ? 0.001 : 0.01;
     gain.gain.setValueAtTime(0, now);
-    gain.gain.linearRampToValueAtTime(volume * 0.5, now + 0.01);
+    gain.gain.linearRampToValueAtTime(volume * 0.5, now + attackTime);
     gain.gain.exponentialRampToValueAtTime(volume * 0.2, now + 0.5);
     gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
 
@@ -308,6 +396,7 @@ export function useAudioEngine() {
     const ctx = audioContextRef.current;
     const now = when !== null ? when : ctx.currentTime;
     const volume = instrumentVolumesRef.current.GUITAR || 0.7;
+    const isUltraMode = CURRENT_LATENCY_MODE === LATENCY_MODES.ULTRA;
 
     // Karplus-Strong inspired guitar synthesis
     const osc1 = ctx.createOscillator();
@@ -338,8 +427,10 @@ export function useAudioEngine() {
     filter.frequency.exponentialRampToValueAtTime(frequency * 2, now + 0.2);
     filter.Q.value = 1;
 
+    // ULTRA mode: ultra-fast attack (0.001s), SYNCED mode: normal attack (0.005s)
+    const attackTime = isUltraMode ? 0.001 : 0.005;
     gain.gain.setValueAtTime(0, now);
-    gain.gain.linearRampToValueAtTime(volume * 0.4, now + 0.005);
+    gain.gain.linearRampToValueAtTime(volume * 0.4, now + attackTime);
     gain.gain.exponentialRampToValueAtTime(volume * 0.15, now + 0.3);
     gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
 
@@ -364,6 +455,11 @@ export function useAudioEngine() {
   const playNote = useCallback((instrument, note, velocity = 100) => {
     resumeAudioContext();
 
+    // ULTRA mode: Warm up audio engine on first real note
+    if (CURRENT_LATENCY_MODE === LATENCY_MODES.ULTRA && !hasWarmedUpRef.current) {
+      warmupAudioEngine();
+    }
+
     if (instrument === 'DRUMS') {
       playDrumSound(note);
     } else {
@@ -385,7 +481,7 @@ export function useAudioEngine() {
       const noteKey = `${instrument}_${note}`;
       activeNotesRef.current.set(noteKey, { frequency, instrument });
     }
-  }, [resumeAudioContext, playDrumSound, playBassSynth, playEPianoSynth, playGuitarSynth]);
+  }, [resumeAudioContext, playDrumSound, playBassSynth, playEPianoSynth, playGuitarSynth, warmupAudioEngine]);
 
   /**
    * Play note at a specific AudioContext time (for scheduled remote notes)
@@ -399,6 +495,11 @@ export function useAudioEngine() {
     if (!audioContextRef.current) return;
     
     resumeAudioContext();
+    
+    // ULTRA mode: Warm up audio engine on first real note
+    if (CURRENT_LATENCY_MODE === LATENCY_MODES.ULTRA && !hasWarmedUpRef.current) {
+      warmupAudioEngine();
+    }
     
     // Ensure we're not scheduling in the past
     const ctx = audioContextRef.current;
@@ -426,7 +527,7 @@ export function useAudioEngine() {
       const noteKey = `${instrument}_${note}`;
       activeNotesRef.current.set(noteKey, { frequency, instrument });
     }
-  }, [resumeAudioContext, playDrumSound, playBassSynth, playEPianoSynth, playGuitarSynth]);
+  }, [resumeAudioContext, playDrumSound, playBassSynth, playEPianoSynth, playGuitarSynth, warmupAudioEngine]);
 
   const stopNote = useCallback((instrument, note) => {
     const noteKey = `${instrument}_${note}`;

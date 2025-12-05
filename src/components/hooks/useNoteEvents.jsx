@@ -2,6 +2,7 @@ import { useEffect, useRef, useCallback } from 'react';
 import { useWebRTC } from './useWebRTC';
 import { createNoteOnEvent, createNoteOffEvent } from '@/lib/jamEventProtocol';
 import { IMMEDIATE_PLAYBACK_THRESHOLD_SECONDS } from '@/lib/clockSync';
+import { CURRENT_LATENCY_MODE, LATENCY_MODES } from '@/config/latencyMode';
 // TODO: Deprecated - Supabase note_events table is no longer used for live audio
 // import { subscribeToNoteEvents, sendNoteEvent } from '../firebaseClient';
 
@@ -10,6 +11,11 @@ import { IMMEDIATE_PLAYBACK_THRESHOLD_SECONDS } from '@/lib/clockSync';
  * Set to true to enable verbose logging in the hot path
  */
 const DEBUG_WEBRTC = false;
+
+/**
+ * Debug flag for latency mode logging
+ */
+const DEBUG_LATENCY = false;
 
 /**
  * useNoteEvents Hook
@@ -122,6 +128,36 @@ export function useNoteEvents(roomId, userId, audioEngine, peers, room, onNoteAc
         return;
       }
 
+      // ULTRA_LOW_LATENCY mode: Immediate playback for all instruments (bypass scheduling)
+      if (CURRENT_LATENCY_MODE === LATENCY_MODES.ULTRA) {
+        if (DEBUG_LATENCY) {
+          console.log('[useNoteEvents] ULTRA mode - playing remote note immediately:', {
+            type: event.type,
+            instrument: event.instrument,
+            note: event.note
+          });
+        }
+        
+        // Immediate playback path - no scheduling
+        if (event.type === 'noteOn') {
+          audioEngine.playNote(event.instrument, event.note, event.velocity);
+          
+          // Trigger activity indicator for remote notes
+          if (onNoteActivity) {
+            onNoteActivity({
+              source: 'remote',
+              instrument: event.instrument,
+              note: event.note,
+              velocity: event.velocity ?? 100
+            });
+          }
+        } else if (event.type === 'noteOff') {
+          audioEngine.stopNote(event.instrument, event.note);
+        }
+        return; // Exit early - ULTRA mode is done
+      }
+
+      // SYNCED mode: Use clock-synchronized scheduling (existing behavior)
       // STEP 2.1: TRUE zero-delay immediate mode for drums
       // Drums must not be scheduled at all - play immediately on arrival
       // This removes the "ping-pong" feeling for percussive instruments
