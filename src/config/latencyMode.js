@@ -3,8 +3,16 @@
  * 
  * Controls how note events are scheduled and played back.
  * 
- * ULTRA_LOW_LATENCY: Immediate playback, bypasses scheduling, preloads audio engine
- * SYNCED: Clock-synchronized playback with latency compensation (existing behavior)
+ * ULTRA_LOW_LATENCY:
+ *   - DRUMS: immediate send (bypasses bundler), immediate receive (no scheduling)
+ *   - BASS/EP/GUITAR: immediate playback (bypasses scheduling), but still uses bundling on send
+ * 
+ * SYNCED:
+ *   - DRUMS: immediate send (bypasses bundler), immediate receive (no scheduling)
+ *   - BASS/EP/GUITAR: clock-synchronized playback with latency compensation + bundling
+ * 
+ * Note: DRUMS always use the fastest path regardless of mode (network latency only).
+ * Other instruments respect the selected latency mode.
  */
 
 export const LATENCY_MODES = {

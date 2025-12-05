@@ -1,4 +1,4 @@
-import { deserializeEvent, normalizeIncomingJamPayload } from './jamEventProtocol';
+import { deserializeEvent, normalizeIncomingJamPayload, serializeEvent } from './jamEventProtocol';
 import { JamEventBundler } from './jamEventBundler';
 import { CURRENT_LATENCY_MODE, LATENCY_MODES, BUNDLE_INTERVAL_MS_ULTRA, BUNDLE_INTERVAL_MS_SYNCED } from '../config/latencyMode';
 
@@ -23,6 +23,11 @@ const DEBUG_WEBRTC = false;
  * - All jam events broadcast to all connected peers
  * 
  * This path must stay as fast as possible - no database calls, no heavy processing.
+ * 
+ * DRUMS are treated in ultra-low-latency mode:
+ * - sending: bypasses bundler and goes out immediately
+ * - receiving: plays immediately, no scheduling (handled in useNoteEvents.jsx)
+ * Other instruments keep the existing scheduling / bundling behavior.
  */
 
 /**
@@ -406,13 +411,23 @@ export class WebRTCManager {
   /**
    * Send jam event to all connected peers
    * 
-   * Events are queued in the bundler and sent at regular intervals
+   * DRUMS events bypass the bundler and are sent immediately for ultra-low latency.
+   * Other instruments are queued in the bundler and sent at regular intervals
    * to reduce burst pressure and stabilize latency.
    * 
    * @param {JamEvent} event - Jam event to send
    */
   sendJamEvent(event) {
-    // Add event to bundler queue (will be flushed at interval)
+    // Fast path: DRUMS events bypass bundler and go out immediately
+    const isDrumsEvent = event && event.instrument === 'DRUMS';
+    
+    if (isDrumsEvent) {
+      // Send DRUMS event immediately, no bundling delay
+      this._sendSingleImmediate(event);
+      return;
+    }
+    
+    // Normal path: Add event to bundler queue (will be flushed at interval)
     this.bundler.addEvent(event);
     
     if (DEBUG_WEBRTC) {
@@ -423,6 +438,58 @@ export class WebRTCManager {
         senderId: event.senderId,
         queueSize: this.bundler.getQueueSize()
       });
+    }
+  }
+
+  /**
+   * Send a single event immediately to all connected peers (bypasses bundler)
+   * Used for DRUMS events that require ultra-low latency.
+   * 
+   * @private
+   * @param {JamEvent} event - Jam event to send
+   */
+  _sendSingleImmediate(event) {
+    if (!event) {
+      return;
+    }
+
+    // Serialize the event
+    let serialized;
+    try {
+      serialized = serializeEvent(event);
+    } catch (error) {
+      console.error('[WebRTCManager] Error serializing DRUMS event:', error);
+      return;
+    }
+
+    if (DEBUG_WEBRTC) {
+      console.log(`[WebRTCManager] Sending DRUMS event immediately (bypassing bundler):`, {
+        type: event.type,
+        instrument: event.instrument,
+        note: event.note,
+        senderId: event.senderId
+      });
+    }
+
+    // Send to all open data channels
+    let sentCount = 0;
+    this.dataChannels.forEach((dataChannel, peerId) => {
+      if (dataChannel.readyState === 'open') {
+        try {
+          dataChannel.send(serialized);
+          sentCount++;
+        } catch (error) {
+          console.error(`[WebRTCManager] Error sending DRUMS event to ${peerId}:`, error);
+        }
+      } else {
+        if (DEBUG_WEBRTC) {
+          console.warn(`[WebRTCManager] DataChannel to ${peerId} not open, cannot send DRUMS event, state: ${dataChannel.readyState}`);
+        }
+      }
+    });
+
+    if (DEBUG_WEBRTC && sentCount > 0) {
+      console.log(`[WebRTCManager] Sent DRUMS event immediately to ${sentCount} peer(s)`);
     }
   }
 

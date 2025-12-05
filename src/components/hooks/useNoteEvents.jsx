@@ -24,6 +24,11 @@ const DEBUG_LATENCY = false;
  * 
  * This hook now uses WebRTC DataChannels instead of Supabase for ultra-low latency.
  * The external API remains the same so existing components don't break.
+ * 
+ * DRUMS are treated in ultra-low-latency mode:
+ * - sending: bypasses bundler and goes out immediately (handled in webrtcManager.js)
+ * - receiving: plays immediately, no scheduling (bypasses all scheduling logic)
+ * Other instruments keep the existing scheduling / bundling behavior.
  */
 
 export function useNoteEvents(roomId, userId, audioEngine, peers, room, onNoteActivity) {
@@ -112,7 +117,30 @@ export function useNoteEvents(roomId, userId, audioEngine, peers, room, onNoteAc
         processedEventsRef.current.delete(firstItem);
       }
 
-      // Schedule the note using roomTime + latency
+      // Fast path: DRUMS always play immediately, bypassing all scheduling logic
+      // This ensures DRUMS get the lowest possible latency (network latency only)
+      const isDrumsEvent = event.instrument === 'DRUMS';
+      if (isDrumsEvent) {
+        // Immediate playback for DRUMS - bypass all scheduling, regardless of mode
+        if (event.type === 'noteOn') {
+          audioEngine.playNote(event.instrument, event.note, event.velocity);
+          
+          // Trigger activity indicator for remote notes
+          if (onNoteActivity) {
+            onNoteActivity({
+              source: 'remote',
+              instrument: event.instrument,
+              note: event.note,
+              velocity: event.velocity ?? 100
+            });
+          }
+        } else if (event.type === 'noteOff') {
+          audioEngine.stopNote(event.instrument, event.note);
+        }
+        return; // Exit early - DRUMS are done (no scheduling, no mode checks)
+      }
+
+      // For non-DRUMS instruments, use mode-based scheduling
       // Get audioContext from audioEngine
       const audioContext = audioEngine.getAudioContext?.();
       if (!audioContext) {
@@ -122,13 +150,23 @@ export function useNoteEvents(roomId, userId, audioEngine, peers, room, onNoteAc
         // Fallback: play immediately
         if (event.type === 'noteOn') {
           audioEngine.playNote(event.instrument, event.note, event.velocity);
+          
+          // Trigger activity indicator for remote notes
+          if (onNoteActivity) {
+            onNoteActivity({
+              source: 'remote',
+              instrument: event.instrument,
+              note: event.note,
+              velocity: event.velocity ?? 100
+            });
+          }
         } else if (event.type === 'noteOff') {
           audioEngine.stopNote(event.instrument, event.note);
         }
         return;
       }
 
-      // ULTRA_LOW_LATENCY mode: Immediate playback for all instruments (bypass scheduling)
+      // ULTRA_LOW_LATENCY mode: Immediate playback for non-DRUMS instruments (bypass scheduling)
       if (CURRENT_LATENCY_MODE === LATENCY_MODES.ULTRA) {
         if (DEBUG_LATENCY) {
           console.log('[useNoteEvents] ULTRA mode - playing remote note immediately:', {
@@ -157,29 +195,7 @@ export function useNoteEvents(roomId, userId, audioEngine, peers, room, onNoteAc
         return; // Exit early - ULTRA mode is done
       }
 
-      // SYNCED mode: Use clock-synchronized scheduling (existing behavior)
-      // STEP 2.1: TRUE zero-delay immediate mode for drums
-      // Drums must not be scheduled at all - play immediately on arrival
-      // This removes the "ping-pong" feeling for percussive instruments
-      if (event.instrument === 'DRUMS') {
-        // Immediate playback for drums - bypass all scheduling
-        if (event.type === 'noteOn') {
-          audioEngine.playNote(event.instrument, event.note, event.velocity);
-          
-          // Trigger activity indicator for remote notes
-          if (onNoteActivity) {
-            onNoteActivity({
-              source: 'remote',
-              instrument: event.instrument,
-              note: event.note,
-              velocity: event.velocity ?? 100
-            });
-          }
-        } else if (event.type === 'noteOff') {
-          audioEngine.stopNote(event.instrument, event.note);
-        }
-        return; // Exit early - drums are done
-      }
+      // SYNCED mode: Use clock-synchronized scheduling for non-DRUMS instruments
 
       // For tonal instruments (BASS, EP, GUITAR), use scheduling
       // Compute target audio time using clockSync
