@@ -29,19 +29,24 @@ export default function DrumPad({ onNotePlay, disabled }) {
     }, 150);
   };
 
+  // Keyboard support
+  // Removed throttling: allow rapid hits on the same pad for fast patterns (16th notes, rolls)
+  // activePads is now only used for visual feedback, not input blocking
   React.useEffect(() => {
     if (disabled) return;
 
     const handleKeyDown = (e) => {
       const pad = DRUM_PADS.find(p => p.key === e.key.toLowerCase());
-      if (pad && !activePads.has(pad.id)) {
+      if (pad) {
+        // Always allow the hit - no blocking based on activePads
+        // This enables fast patterns like 16th notes and rolls
         handlePadPress(pad.id);
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [disabled, activePads]);
+  }, [disabled]); // Removed activePads dependency - no longer needed for blocking
 
   return (
     <div className="grid grid-cols-4 gap-2">

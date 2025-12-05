@@ -7,6 +7,18 @@ import { CURRENT_LATENCY_MODE, LATENCY_MODES } from '@/config/latencyMode';
 const DEBUG_LATENCY = false;
 
 /**
+ * Debug flag for drum polyphony logging
+ * Set to true to inspect voice creation and stealing
+ */
+const DEBUG_DRUMS = false;
+
+/**
+ * Maximum number of simultaneous drum voices (polyphony limit)
+ * Prevents unbounded node growth during fast patterns
+ */
+const MAX_DRUM_VOICES = 32;
+
+/**
  * Enhanced Web Audio Engine Hook
  * Implements realistic synthesis for Drums, Bass, Electric Piano, and Guitar
  */
@@ -27,6 +39,10 @@ export function useAudioEngine() {
   const metronomeIntervalRef = useRef(null);
   const nextMetronomeTimeRef = useRef(0);
   const hasWarmedUpRef = useRef(false);
+  
+  // Drum voice tracking for polyphony management
+  // Each voice is { nodes: [...], stopTime: number, drumType: string }
+  const drumVoicesRef = useRef([]);
 
   useEffect(() => {
     const initAudio = async () => {
@@ -144,6 +160,12 @@ export function useAudioEngine() {
   /**
    * Enhanced Drum Synthesis - More realistic drum sounds
    * 
+   * Optimized for fast patterns (16th notes and denser):
+   * - Per-hit voices (no shared source nodes)
+   * - Polyphony management with voice stealing
+   * - Short, punchy envelopes for fast patterns
+   * - ULTRA mode uses fastest possible attack/decay
+   * 
    * @param {string} drumType - Drum type ('kick', 'snare', 'hihat', 'crash', etc.)
    * @param {number} [when] - Optional scheduled time in AudioContext time (defaults to now)
    */
@@ -153,38 +175,81 @@ export function useAudioEngine() {
     const ctx = audioContextRef.current;
     const now = when !== null ? when : ctx.currentTime;
     const volume = instrumentVolumesRef.current.DRUMS || 0.8;
+    const isUltraMode = CURRENT_LATENCY_MODE === LATENCY_MODES.ULTRA;
+
+    // Polyphony management: check if we need to steal a voice
+    const activeVoices = drumVoicesRef.current.filter(v => v.stopTime > now);
+    if (activeVoices.length >= MAX_DRUM_VOICES) {
+      // Voice stealing: find the oldest voice (earliest stopTime) and stop it
+      const oldestVoice = activeVoices.reduce((oldest, current) => 
+        current.stopTime < oldest.stopTime ? current : oldest
+      );
+      
+      // Stop and disconnect all nodes in the stolen voice
+      oldestVoice.nodes.forEach(node => {
+        try {
+          if (node.stop) node.stop();
+          if (node.disconnect) node.disconnect();
+        } catch (e) {
+          // Node may already be stopped/disconnected, ignore
+        }
+      });
+      
+      // Remove from tracking
+      drumVoicesRef.current = drumVoicesRef.current.filter(v => v !== oldestVoice);
+      
+      if (DEBUG_DRUMS) {
+        console.log('[Drums] Voice stolen', { 
+          type: oldestVoice.drumType, 
+          activeVoices: activeVoices.length - 1 
+        });
+      }
+    }
+
+    // Track all nodes created for this voice
+    const voiceNodes = [];
+    let stopTime = now;
+
+    // ULTRA mode: ultra-fast attack (0.001s), optimized decay for fast patterns
+    // SYNCED mode: slightly longer attack/decay for smoother sound
+    const attackTime = isUltraMode ? 0.001 : 0.001; // Both use fast attack
+    const masterGain = masterGainRef.current;
 
     switch (drumType) {
       case 'kick': {
         // Two-stage kick: punch + sub bass
+        // Optimized for fast patterns: shorter decay
         const osc1 = ctx.createOscillator();
         const osc2 = ctx.createOscillator();
         const gain1 = ctx.createGain();
         const gain2 = ctx.createGain();
+        voiceNodes.push(osc1, osc2, gain1, gain2);
         
         osc1.frequency.setValueAtTime(150, now);
-        osc1.frequency.exponentialRampToValueAtTime(40, now + 0.15);
+        osc1.frequency.exponentialRampToValueAtTime(40, now + 0.1); // Shorter: 0.1s (was 0.15s)
         osc2.frequency.setValueAtTime(80, now);
-        osc2.frequency.exponentialRampToValueAtTime(30, now + 0.2);
+        osc2.frequency.exponentialRampToValueAtTime(30, now + 0.15); // Shorter: 0.15s (was 0.2s)
         
         gain1.gain.setValueAtTime(volume * 0.9, now);
-        gain1.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
+        gain1.gain.exponentialRampToValueAtTime(0.001, now + 0.1); // Shorter decay
         gain2.gain.setValueAtTime(volume * 0.7, now);
-        gain2.gain.exponentialRampToValueAtTime(0.001, now + 0.3);
+        gain2.gain.exponentialRampToValueAtTime(0.001, now + 0.2); // Shorter: 0.2s (was 0.3s)
         
-        osc1.connect(gain1).connect(masterGainRef.current);
-        osc2.connect(gain2).connect(masterGainRef.current);
+        osc1.connect(gain1).connect(masterGain);
+        osc2.connect(gain2).connect(masterGain);
         osc1.start(now);
         osc2.start(now);
-        osc1.stop(now + 0.3);
-        osc2.stop(now + 0.4);
+        osc1.stop(now + 0.2);
+        osc2.stop(now + 0.25);
+        stopTime = now + 0.25;
         break;
       }
       case 'snare': {
         // Tone + noise for realistic snare
+        // Optimized for fast rolls: shorter decay
         const osc = ctx.createOscillator();
         const noise = ctx.createBufferSource();
-        const noiseBuffer = ctx.createBuffer(1, ctx.sampleRate * 0.2, ctx.sampleRate);
+        const noiseBuffer = ctx.createBuffer(1, ctx.sampleRate * 0.1, ctx.sampleRate); // Shorter: 0.1s (was 0.2s)
         const data = noiseBuffer.getChannelData(0);
         for (let i = 0; i < data.length; i++) {
           data[i] = Math.random() * 2 - 1;
@@ -194,6 +259,7 @@ export function useAudioEngine() {
         const gainTone = ctx.createGain();
         const gainNoise = ctx.createGain();
         const filter = ctx.createBiquadFilter();
+        voiceNodes.push(osc, noise, gainTone, gainNoise, filter);
         
         osc.type = 'triangle';
         osc.frequency.value = 180;
@@ -201,22 +267,24 @@ export function useAudioEngine() {
         filter.frequency.value = 1000;
         
         gainTone.gain.setValueAtTime(volume * 0.4, now);
-        gainTone.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
+        gainTone.gain.exponentialRampToValueAtTime(0.001, now + 0.1); // Shorter: 0.1s (was 0.15s)
         gainNoise.gain.setValueAtTime(volume * 0.6, now);
-        gainNoise.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
+        gainNoise.gain.exponentialRampToValueAtTime(0.001, now + 0.1); // Shorter: 0.1s (was 0.15s)
         
-        osc.connect(gainTone).connect(masterGainRef.current);
-        noise.connect(filter).connect(gainNoise).connect(masterGainRef.current);
+        osc.connect(gainTone).connect(masterGain);
+        noise.connect(filter).connect(gainNoise).connect(masterGain);
         osc.start(now);
         noise.start(now);
-        osc.stop(now + 0.2);
-        noise.stop(now + 0.2);
+        osc.stop(now + 0.1);
+        noise.stop(now + 0.1);
+        stopTime = now + 0.1;
         break;
       }
       case 'hihat': {
         // Filtered white noise for hi-hat
+        // Already short, but ensure it's optimized for 16th notes
         const noise = ctx.createBufferSource();
-        const noiseBuffer = ctx.createBuffer(1, ctx.sampleRate * 0.05, ctx.sampleRate);
+        const noiseBuffer = ctx.createBuffer(1, ctx.sampleRate * 0.03, ctx.sampleRate); // Shorter: 0.03s (was 0.05s)
         const data = noiseBuffer.getChannelData(0);
         for (let i = 0; i < data.length; i++) {
           data[i] = Math.random() * 2 - 1;
@@ -228,19 +296,22 @@ export function useAudioEngine() {
         filter.type = 'highpass';
         filter.frequency.value = 7000;
         filter.Q.value = 1;
+        voiceNodes.push(noise, gain, filter);
         
         gain.gain.setValueAtTime(volume * 0.3, now);
-        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.05);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.03); // Shorter: 0.03s (was 0.05s)
         
-        noise.connect(filter).connect(gain).connect(masterGainRef.current);
+        noise.connect(filter).connect(gain).connect(masterGain);
         noise.start(now);
-        noise.stop(now + 0.1);
+        noise.stop(now + 0.05);
+        stopTime = now + 0.05;
         break;
       }
       case 'crash': {
-        // Long filtered noise
+        // Long filtered noise (crash needs longer decay for realism)
+        // Keep longer but still allow overlapping hits
         const noise = ctx.createBufferSource();
-        const noiseBuffer = ctx.createBuffer(1, ctx.sampleRate * 2, ctx.sampleRate);
+        const noiseBuffer = ctx.createBuffer(1, ctx.sampleRate * 1.5, ctx.sampleRate); // Slightly shorter: 1.5s (was 2s)
         const data = noiseBuffer.getChannelData(0);
         for (let i = 0; i < data.length; i++) {
           data[i] = Math.random() * 2 - 1;
@@ -252,26 +323,54 @@ export function useAudioEngine() {
         filter.type = 'bandpass';
         filter.frequency.value = 5000;
         filter.Q.value = 0.5;
+        voiceNodes.push(noise, gain, filter);
         
         gain.gain.setValueAtTime(volume * 0.5, now);
-        gain.gain.exponentialRampToValueAtTime(0.001, now + 1.5);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 1.2); // Slightly shorter: 1.2s (was 1.5s)
         
-        noise.connect(filter).connect(gain).connect(masterGainRef.current);
+        noise.connect(filter).connect(gain).connect(masterGain);
         noise.start(now);
-        noise.stop(now + 2);
+        noise.stop(now + 1.5);
+        stopTime = now + 1.5;
         break;
       }
       default:
-        // Tom sound
+        // Tom sound (tom1, tom2, ride, clap, etc.)
         const osc = ctx.createOscillator();
         const gain = ctx.createGain();
+        voiceNodes.push(osc, gain);
+        
         osc.frequency.setValueAtTime(200, now);
-        osc.frequency.exponentialRampToValueAtTime(80, now + 0.15);
+        osc.frequency.exponentialRampToValueAtTime(80, now + 0.1); // Shorter: 0.1s (was 0.15s)
         gain.gain.setValueAtTime(volume * 0.7, now);
-        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.3);
-        osc.connect(gain).connect(masterGainRef.current);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.2); // Shorter: 0.2s (was 0.3s)
+        
+        osc.connect(gain).connect(masterGain);
         osc.start(now);
-        osc.stop(now + 0.4);
+        osc.stop(now + 0.25);
+        stopTime = now + 0.25;
+    }
+
+    // Track this voice for polyphony management
+    const voice = {
+      nodes: voiceNodes,
+      stopTime: stopTime,
+      drumType: drumType
+    };
+    drumVoicesRef.current.push(voice);
+
+    // Cleanup: remove voice from tracking after it stops
+    const cleanupDelay = (stopTime - now) * 1000 + 100; // Add 100ms buffer
+    setTimeout(() => {
+      drumVoicesRef.current = drumVoicesRef.current.filter(v => v !== voice);
+    }, Math.max(0, cleanupDelay));
+
+    if (DEBUG_DRUMS) {
+      console.log('[Drums] New voice', { 
+        type: drumType, 
+        activeVoices: activeVoices.length + 1,
+        stopTime: stopTime.toFixed(3)
+      });
     }
   }, []);
 
