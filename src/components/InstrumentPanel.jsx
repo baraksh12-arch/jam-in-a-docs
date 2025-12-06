@@ -4,6 +4,8 @@ import { Slider } from '@/components/ui/slider';
 import { Volume2, VolumeX } from 'lucide-react';
 import DrumPad from './DrumPad';
 import PianoKeyboard from './PianoKeyboard';
+import { setBassMode, getBassMode, BASS_MODE_SYNTH, BASS_MODE_SAMPLED } from '@/lib/instruments/bass';
+import { setDrumKitMode, getDrumKitMode, DRUM_KIT_MODE_SAMPLED, DRUM_KIT_MODE_ELECTRONIC } from '@/lib/instruments/drums';
 
 const INSTRUMENT_CONFIG = {
   DRUMS: {
@@ -40,8 +42,24 @@ const InstrumentPanel = forwardRef(function InstrumentPanel({
   const [volume, setVolume] = useState(0.8);
   const [isMuted, setIsMuted] = useState(false);
   const [activity, setActivity] = useState(false);
+  const [bassMode, setBassModeState] = useState(getBassMode());
+  const [drumKitMode, setDrumKitModeState] = useState(getDrumKitMode());
 
   const config = INSTRUMENT_CONFIG[instrument];
+
+  // Update bass mode state when it changes externally
+  useEffect(() => {
+    if (instrument === 'BASS') {
+      setBassModeState(getBassMode());
+    }
+  }, [instrument]);
+
+  // Update drum kit mode state when it changes externally
+  useEffect(() => {
+    if (instrument === 'DRUMS') {
+      setDrumKitModeState(getDrumKitMode());
+    }
+  }, [instrument]);
 
   // Expose triggerActivity method via ref for external triggering
   useImperativeHandle(ref, () => ({
@@ -80,6 +98,18 @@ const InstrumentPanel = forwardRef(function InstrumentPanel({
     const newMuted = !isMuted;
     setIsMuted(newMuted);
     audioEngine.setInstrumentVolume(instrument, newMuted ? 0 : volume);
+  };
+
+  const handleBassModeChange = (event) => {
+    const newMode = event.target.value;
+    setBassModeState(newMode);
+    setBassMode(newMode);
+  };
+
+  const handleDrumKitModeChange = (event) => {
+    const newMode = event.target.value;
+    setDrumKitModeState(newMode);
+    setDrumKitMode(newMode);
   };
 
   return (
@@ -129,6 +159,64 @@ const InstrumentPanel = forwardRef(function InstrumentPanel({
             />
           </div>
         </div>
+        
+        {/* Bass mode toggle - only show for BASS instrument */}
+        {instrument === 'BASS' && player && (
+          <div className="mt-2 flex items-center gap-3 text-xs">
+            <span className="text-white/70">Bass:</span>
+            <label className="flex items-center gap-1 cursor-pointer">
+              <input
+                type="radio"
+                value={BASS_MODE_SYNTH}
+                checked={bassMode === BASS_MODE_SYNTH}
+                onChange={handleBassModeChange}
+                className="cursor-pointer"
+                disabled={!isMyInstrument}
+              />
+              <span className="text-white/80">Synth</span>
+            </label>
+            <label className="flex items-center gap-1 cursor-pointer">
+              <input
+                type="radio"
+                value={BASS_MODE_SAMPLED}
+                checked={bassMode === BASS_MODE_SAMPLED}
+                onChange={handleBassModeChange}
+                className="cursor-pointer"
+                disabled={!isMyInstrument}
+              />
+              <span className="text-white/80">Sampled</span>
+            </label>
+          </div>
+        )}
+        
+        {/* Drum kit mode toggle - only show for DRUMS instrument */}
+        {instrument === 'DRUMS' && player && (
+          <div className="mt-2 flex items-center gap-3 text-xs">
+            <span className="text-white/70">Drums:</span>
+            <label className="flex items-center gap-1 cursor-pointer">
+              <input
+                type="radio"
+                value={DRUM_KIT_MODE_SAMPLED}
+                checked={drumKitMode === DRUM_KIT_MODE_SAMPLED}
+                onChange={handleDrumKitModeChange}
+                className="cursor-pointer"
+                disabled={!isMyInstrument}
+              />
+              <span className="text-white/80">Sampled</span>
+            </label>
+            <label className="flex items-center gap-1 cursor-pointer">
+              <input
+                type="radio"
+                value={DRUM_KIT_MODE_ELECTRONIC}
+                checked={drumKitMode === DRUM_KIT_MODE_ELECTRONIC}
+                onChange={handleDrumKitModeChange}
+                className="cursor-pointer"
+                disabled={!isMyInstrument}
+              />
+              <span className="text-white/80">Electronic</span>
+            </label>
+          </div>
+        )}
       </CardHeader>
 
       <CardContent>

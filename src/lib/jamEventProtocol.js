@@ -240,9 +240,26 @@ export function isJamEvent(obj) {
  * @param {number} params.velocity
  * @param {number} params.roomTime
  * @param {string} params.senderId
+ * @param {number} [params.timestamp] - Optional server-aligned timestamp (uses syncedNow() if not provided)
  * @returns {NoteOnEvent}
  */
-export function createNoteOnEvent({ instrument, note, velocity, roomTime, senderId }) {
+export function createNoteOnEvent({ instrument, note, velocity, roomTime, senderId, timestamp }) {
+  // Use syncedNow() for server-aligned timestamp if not provided
+  let eventTimestamp = timestamp;
+  if (eventTimestamp === undefined || eventTimestamp === null) {
+    // Try to use syncedNow() if available (via global window reference)
+    if (typeof window !== 'undefined' && window.__syncedNow) {
+      try {
+        eventTimestamp = window.__syncedNow();
+      } catch (error) {
+        eventTimestamp = Date.now();
+      }
+    } else {
+      // Fallback to Date.now() if syncedNow not available
+      eventTimestamp = Date.now();
+    }
+  }
+
   return {
     type: 'noteOn',
     instrument,
@@ -250,7 +267,7 @@ export function createNoteOnEvent({ instrument, note, velocity, roomTime, sender
     velocity,
     roomTime,
     senderId,
-    timestamp: Date.now()
+    timestamp: eventTimestamp
   };
 }
 
@@ -262,16 +279,33 @@ export function createNoteOnEvent({ instrument, note, velocity, roomTime, sender
  * @param {number|string} params.note - MIDI note (0-127) or drum pad ID (e.g., "kick", "snare")
  * @param {number} params.roomTime
  * @param {string} params.senderId
+ * @param {number} [params.timestamp] - Optional server-aligned timestamp (uses syncedNow() if not provided)
  * @returns {NoteOffEvent}
  */
-export function createNoteOffEvent({ instrument, note, roomTime, senderId }) {
+export function createNoteOffEvent({ instrument, note, roomTime, senderId, timestamp }) {
+  // Use syncedNow() for server-aligned timestamp if not provided
+  let eventTimestamp = timestamp;
+  if (eventTimestamp === undefined || eventTimestamp === null) {
+    // Try to use syncedNow() if available (via global window reference)
+    if (typeof window !== 'undefined' && window.__syncedNow) {
+      try {
+        eventTimestamp = window.__syncedNow();
+      } catch (error) {
+        eventTimestamp = Date.now();
+      }
+    } else {
+      // Fallback to Date.now() if syncedNow not available
+      eventTimestamp = Date.now();
+    }
+  }
+
   return {
     type: 'noteOff',
     instrument,
     note,
     roomTime,
     senderId,
-    timestamp: Date.now()
+    timestamp: eventTimestamp
   };
 }
 

@@ -92,6 +92,7 @@ export class ClockSync {
   /**
    * Get current room time in seconds
    * Returns seconds since room start
+   * Uses syncedNow() if available for server-aligned time, otherwise falls back to Date.now()
    * 
    * @returns {number} Room time in seconds, or 0 if not initialized
    */
@@ -100,7 +101,20 @@ export class ClockSync {
       return 0;
     }
     
-    const now = Date.now();
+    // Try to use syncedNow() for server-aligned time
+    // We'll use a lazy import pattern to avoid circular dependencies
+    let now = Date.now();
+    
+    // Check if syncedNow is available (set by initSyncedNow)
+    if (typeof window !== 'undefined' && window.__syncedNow) {
+      try {
+        now = window.__syncedNow();
+      } catch (error) {
+        // Fallback to local time
+        now = Date.now();
+      }
+    }
+    
     const elapsedMs = now - this.roomStartTimestamp;
     return elapsedMs / 1000; // Convert to seconds
   }

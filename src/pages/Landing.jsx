@@ -27,6 +27,9 @@ export default function Landing() {
       if (!room || !room.id) {
         throw new Error('Room created but no ID returned');
       }
+      // PHASE 2: Add delay after room creation to allow Supabase to propagate
+      console.log('[Landing] Room created, waiting for Supabase propagation...');
+      await new Promise(resolve => setTimeout(resolve, 300));
       // Navigate using the room ID from the created room object
       navigate(createPageUrl(`Room?id=${room.id}`));
     } catch (error) {

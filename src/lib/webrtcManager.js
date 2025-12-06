@@ -46,6 +46,7 @@ const DEBUG_WEBRTC = false;
  * @property {function(JamEvent, string): void} onJamEvent - Callback when jam event received
  * @property {function(string, 'connecting'|'connected'|'disconnected'): void} [onPeerConnectionChange] - Optional callback for connection state changes
  * @property {Object} [clockSync] - ClockSync instance for latency measurement
+ * @property {function(Object): void} [onClaimEvent] - Optional callback for claim events
  */
 
 /**
@@ -61,6 +62,7 @@ export class WebRTCManager {
     this.signaling = options.signaling;
     this.onJamEvent = options.onJamEvent;
     this.onPeerConnectionChange = options.onPeerConnectionChange || (() => {});
+    this.onClaimEvent = options.onClaimEvent || null;
     this.clockSync = options.clockSync || null;
 
     /** @type {Map<string, RTCPeerConnection>} Peer ID -> RTCPeerConnection */
@@ -303,6 +305,18 @@ export class WebRTCManager {
           return; // Control message handled, don't process as jam event
         }
 
+        // Check if it's a claim event - handle synchronously (fast)
+        if (parsed && typeof parsed === 'object' && parsed.type === 'instrument-claim') {
+          if (this.onClaimEvent) {
+            try {
+              this.onClaimEvent(parsed);
+            } catch (error) {
+              console.error(`[WebRTCManager] Error handling claim event from ${peerId}:`, error);
+            }
+          }
+          return; // Claim event handled, don't process as jam event
+        }
+
         // STEP 2.4: Move jam event handling to microtask to avoid blocking WebRTC message queue
         // This ensures WebRTC can continue receiving messages while we process events
         queueMicrotask(() => {
@@ -405,6 +419,58 @@ export class WebRTCManager {
       }
     } catch (error) {
       console.error(`Error handling ${type} from ${from}:`, error);
+    }
+  }
+
+  /**
+   * Send a claim event to all connected peers
+   * Claim events are sent immediately (bypass bundler) for real-time sync
+   * 
+   * @param {Object} event - Claim event object
+   * @param {string} event.type - 'instrument-claim'
+   * @param {string} event.instrument - Instrument name
+   * @param {string} event.userId - User ID
+   * @param {boolean} event.isClaim - True if claiming, false if releasing
+   * @param {number} event.timestamp - Server-aligned timestamp
+   */
+  sendClaimEvent(event) {
+    if (!event || event.type !== 'instrument-claim') {
+      console.warn('[WebRTCManager] Invalid claim event:', event);
+      return;
+    }
+
+    // Serialize the event
+    let serialized;
+    try {
+      serialized = JSON.stringify(event);
+    } catch (error) {
+      console.error('[WebRTCManager] Error serializing claim event:', error);
+      return;
+    }
+
+    if (DEBUG_WEBRTC) {
+      console.log('[WebRTCManager] Sending claim event:', {
+        instrument: event.instrument,
+        userId: event.userId,
+        isClaim: event.isClaim,
+      });
+    }
+
+    // Send to all open data channels (immediate, no bundling)
+    let sentCount = 0;
+    this.dataChannels.forEach((dataChannel, peerId) => {
+      if (dataChannel.readyState === 'open') {
+        try {
+          dataChannel.send(serialized);
+          sentCount++;
+        } catch (error) {
+          console.error(`[WebRTCManager] Error sending claim event to ${peerId}:`, error);
+        }
+      }
+    });
+
+    if (DEBUG_WEBRTC && sentCount > 0) {
+      console.log(`[WebRTCManager] Sent claim event to ${sentCount} peer(s)`);
     }
   }
 

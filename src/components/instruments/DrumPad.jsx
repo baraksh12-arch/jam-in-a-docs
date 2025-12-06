@@ -18,6 +18,7 @@ export default function DrumPad({ onNotePlay, disabled }) {
   const handlePadPress = (padId) => {
     if (disabled) return;
     
+    console.log('[UI] Drum triggered:', padId);
     onNotePlay(padId);
     
     // Visual feedback

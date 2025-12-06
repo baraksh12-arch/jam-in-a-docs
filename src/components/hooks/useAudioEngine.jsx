@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { CURRENT_LATENCY_MODE, LATENCY_MODES } from '@/config/latencyMode';
+import * as ToneInstruments from '@/lib/instruments';
 
 /**
  * Debug flag for latency mode logging
@@ -40,6 +41,10 @@ export function useAudioEngine() {
   const nextMetronomeTimeRef = useRef(0);
   const hasWarmedUpRef = useRef(false);
   
+  // Tone.js integration (shadowing existing implementation)
+  const toneInstrumentsReadyRef = useRef(false);
+  const useToneJsRef = useRef(false); // Flag to enable/disable Tone.js path
+  
   // Drum voice tracking for polyphony management
   // Each voice is { nodes: [...], stopTime: number, drumType: string }
   const drumVoicesRef = useRef([]);
@@ -47,11 +52,31 @@ export function useAudioEngine() {
   useEffect(() => {
     const initAudio = async () => {
       try {
+        // Initialize raw Web Audio API (existing implementation)
         const AudioContext = window.AudioContext || window.webkitAudioContext;
         audioContextRef.current = new AudioContext();
         
         masterGainRef.current = audioContextRef.current.createGain();
         masterGainRef.current.connect(audioContextRef.current.destination);
+        
+        // Initialize Tone.js instruments (shadowing implementation)
+        try {
+          await ToneInstruments.initAllInstruments();
+          toneInstrumentsReadyRef.current = true;
+          useToneJsRef.current = true; // Enable Tone.js path by default
+          
+          // Sync instrument volumes with Tone.js
+          ToneInstruments.setInstrumentVolume('DRUMS', instrumentVolumesRef.current.DRUMS);
+          ToneInstruments.setInstrumentVolume('BASS', instrumentVolumesRef.current.BASS);
+          ToneInstruments.setInstrumentVolume('EP', instrumentVolumesRef.current.EP);
+          ToneInstruments.setInstrumentVolume('GUITAR', instrumentVolumesRef.current.GUITAR);
+          
+          console.log('[AudioEngine] Tone.js instruments initialized and ready');
+        } catch (toneError) {
+          console.warn('[AudioEngine] Tone.js initialization failed, falling back to raw Web Audio API:', toneError);
+          toneInstrumentsReadyRef.current = false;
+          useToneJsRef.current = false;
+        }
         
         setTimeout(() => {
           setIsReady(true);
@@ -67,6 +92,12 @@ export function useAudioEngine() {
     initAudio();
 
     return () => {
+      // Cleanup Tone.js instruments
+      if (toneInstrumentsReadyRef.current) {
+        ToneInstruments.dispose();
+      }
+      
+      // Cleanup raw Web Audio API
       if (audioContextRef.current) {
         audioContextRef.current.close();
       }
@@ -550,10 +581,28 @@ export function useAudioEngine() {
 
   /**
    * Main playNote function (immediate playback)
+   * Uses Tone.js if available, otherwise falls back to raw Web Audio API
    */
   const playNote = useCallback((instrument, note, velocity = 100) => {
     resumeAudioContext();
 
+    // Try Tone.js path first (if enabled and ready)
+    if (useToneJsRef.current && toneInstrumentsReadyRef.current) {
+      try {
+        if (instrument === 'DRUMS') {
+          console.log(`[AudioEngine] playNote DRUMS: ${note}`);
+        }
+        ToneInstruments.triggerNote(instrument, note, undefined, velocity);
+        const noteKey = `${instrument}_${note}`;
+        activeNotesRef.current.set(noteKey, { instrument, note });
+        return; // Exit early - Tone.js handled it
+      } catch (error) {
+        console.warn('[AudioEngine] Tone.js playNote failed, falling back to raw Web Audio API:', error);
+        // Fall through to raw Web Audio API path
+      }
+    }
+
+    // Fallback to raw Web Audio API (existing implementation)
     // ULTRA mode: Warm up audio engine on first real note
     if (CURRENT_LATENCY_MODE === LATENCY_MODES.ULTRA && !hasWarmedUpRef.current) {
       warmupAudioEngine();
@@ -584,6 +633,7 @@ export function useAudioEngine() {
 
   /**
    * Play note at a specific AudioContext time (for scheduled remote notes)
+   * Uses Tone.js if available, otherwise falls back to raw Web Audio API
    * 
    * @param {string} instrument - Instrument name
    * @param {number|string} note - MIDI note (0-127) or drum pad ID
@@ -595,6 +645,22 @@ export function useAudioEngine() {
     
     resumeAudioContext();
     
+    // Try Tone.js path first (if enabled and ready)
+    if (useToneJsRef.current && toneInstrumentsReadyRef.current) {
+      try {
+        // Convert AudioContext time to Tone.Transport time
+        const transportTime = ToneInstruments.audioContextTimeToTransportTime(whenInSeconds);
+        ToneInstruments.triggerNote(instrument, note, transportTime, velocity);
+        const noteKey = `${instrument}_${note}`;
+        activeNotesRef.current.set(noteKey, { instrument, note });
+        return; // Exit early - Tone.js handled it
+      } catch (error) {
+        console.warn('[AudioEngine] Tone.js playNoteAt failed, falling back to raw Web Audio API:', error);
+        // Fall through to raw Web Audio API path
+      }
+    }
+    
+    // Fallback to raw Web Audio API (existing implementation)
     // ULTRA mode: Warm up audio engine on first real note
     if (CURRENT_LATENCY_MODE === LATENCY_MODES.ULTRA && !hasWarmedUpRef.current) {
       warmupAudioEngine();
@@ -656,7 +722,17 @@ export function useAudioEngine() {
   }, []);
 
   const setInstrumentVolume = useCallback((instrument, value) => {
-    instrumentVolumesRef.current[instrument] = Math.max(0, Math.min(1, value));
+    const clampedValue = Math.max(0, Math.min(1, value));
+    instrumentVolumesRef.current[instrument] = clampedValue;
+    
+    // Sync volume with Tone.js if available
+    if (useToneJsRef.current && toneInstrumentsReadyRef.current) {
+      try {
+        ToneInstruments.setInstrumentVolume(instrument, clampedValue);
+      } catch (error) {
+        console.warn('[AudioEngine] Failed to set Tone.js volume:', error);
+      }
+    }
   }, []);
 
   const playMetronomeClick = useCallback((isDownbeat = false) => {

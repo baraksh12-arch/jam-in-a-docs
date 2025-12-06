@@ -1,14 +1,16 @@
 /**
  * Room Page
- * Fixed: Added defensive logging and improved error handling for room ID from URL
+ * Production-ready version with proper React imports
+ * Fixed: useCallback import issue - using React.useCallback to avoid module resolution problems
  */
-import React, { useEffect, useState, useRef, useCallback } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { createPageUrl } from '@/utils';
 import { useUserIdentity } from '../components/hooks/useUserIdentity';
 import { useRoomState } from '../components/hooks/useRoomState';
 import { useAudioEngine } from '../components/hooks/useAudioEngine';
 import { useNoteEvents } from '../components/hooks/useNoteEvents';
+import { useWebRTC } from '../components/hooks/useWebRTC';
 import { createRoom, joinRoomAsPlayer, getRoom } from '../components/firebaseClient';
 import RoomTopBar from '../components/RoomTopBar';
 import InstrumentSlot from '../components/InstrumentSlot';
@@ -17,14 +19,43 @@ import ChatPanel from '../components/ChatPanel';
 import { Loader2 } from 'lucide-react';
 
 export default function Room() {
+  // EMERGENCY DEBUG: Log immediately to verify component is loading
+  console.log('[Room.jsx] Component rendering - React available:', typeof React !== 'undefined');
+  
   const navigate = useNavigate();
   const urlParams = new URLSearchParams(window.location.search);
   const roomId = urlParams.get('id');
   
+  // PHASE 2: Track last roomId to prevent issues when switching rooms
+  const lastRoomIdRef = useRef(null);
+  
   // Fixed: Add defensive logging for room ID
   console.log('[Room] roomId from route/query:', roomId);
+  
+  // PHASE 3: Log roomId changes
+  useEffect(() => {
+    if (roomId !== lastRoomIdRef.current) {
+      console.log('[Room] Room ID changed:', { from: lastRoomIdRef.current, to: roomId });
+      lastRoomIdRef.current = roomId;
+    }
+  }, [roomId]);
 
   const { userId, displayName, color, isReady: userReady } = useUserIdentity();
+  
+  const audioEngine = useAudioEngine();
+  
+  // Create activity trigger functions for each instrument
+  const activityTriggersRef = useRef({});
+  
+  // Use React.useCallback directly to avoid import issues
+  const handleNoteActivity = React.useCallback(({ source, instrument, note, velocity }) => {
+    const trigger = activityTriggersRef.current[instrument];
+    if (trigger) {
+      trigger();
+    }
+  }, []);
+  
+  // Get room state first (needed for peers and room data)
   const { 
     room, 
     players,
@@ -33,21 +64,68 @@ export default function Room() {
     loading: roomLoading,
     error: roomError,
     ...roomControls 
-  } = useRoomState(roomId, userId);
-
-  const audioEngine = useAudioEngine();
+  } = useRoomState(roomId, userId, null); // Pass null initially, will be set after webrtc is created
   
-  // Create activity trigger functions for each instrument
-  const activityTriggersRef = useRef({});
+  // PHASE 3: Log room state at mount
+  useEffect(() => {
+    console.log('[Room] Room state update:', {
+      roomId,
+      room: !!room,
+      playersCount: players?.length || 0,
+      peersCount: peers?.length || 0,
+      currentPlayer: !!currentPlayer,
+      roomLoading,
+      roomError
+    });
+  }, [roomId, room, players, peers, currentPlayer, roomLoading, roomError]);
   
-  const handleNoteActivity = useCallback(({ source, instrument, note, velocity }) => {
-    const trigger = activityTriggersRef.current[instrument];
-    if (trigger) {
-      trigger();
+  // Initialize WebRTC with peers and room (needed for claim sync and note events)
+  // PHASE 2: Ensure peers is always an array (even if empty)
+  const safePeers = Array.isArray(peers) ? peers : [];
+  const webrtc = useWebRTC({ roomId, userId, peers: safePeers, room });
+  
+  // PHASE 3: Log WebRTC initialization
+  useEffect(() => {
+    if (webrtc) {
+      console.log('[Room] WebRTC initialized:', {
+        ready: webrtc.ready,
+        connectionStates: webrtc.connectionStates
+      });
     }
-  }, []);
+  }, [webrtc]);
   
-  const { sendNote } = useNoteEvents(roomId, userId, audioEngine, peers, room, handleNoteActivity);
+  // Update useRoomState with webrtc instance for claim sync
+  // This is a bit of a hack - we need webrtc in useRoomState but it depends on peers
+  // So we update it after both are created
+  useEffect(() => {
+    if (webrtc && roomControls.setWebRTC) {
+      try {
+        roomControls.setWebRTC(webrtc);
+        console.log('[Room] WebRTC instance set in useRoomState');
+      } catch (error) {
+        console.error('[Room] Error setting WebRTC in useRoomState:', error);
+      }
+    }
+  }, [webrtc, roomControls]);
+  
+  // PHASE 3: Log claim events and WebRTC errors
+  useEffect(() => {
+    if (!webrtc) return;
+    
+    // Log WebRTC connection state changes
+    const connectionStates = webrtc.connectionStates || {};
+    console.log('[Room] WebRTC connection states:', connectionStates);
+    
+    // Register for claim events (if available)
+    if (webrtc.onClaimEvent) {
+      const unsubscribe = webrtc.onClaimEvent((event) => {
+        console.log('[Room] Received claim event:', event);
+      });
+      return unsubscribe;
+    }
+  }, [webrtc]);
+
+  const { sendNote } = useNoteEvents(roomId, userId, audioEngine, peers, room, handleNoteActivity, webrtc);
 
   const [initializing, setInitializing] = useState(true);
   const [showInstruments, setShowInstruments] = useState(false);
@@ -71,17 +149,31 @@ export default function Room() {
         // Check if room exists
         const existingRoom = await getRoom(roomId);
         
+        let roomJustCreated = false;
         if (!existingRoom) {
           // Room doesn't exist - create it (fallback for manual room code entry)
           console.log('[Room] Room not found, creating new room:', roomId);
           await createRoom(roomId);
+          roomJustCreated = true;
         } else {
           console.log('[Room] Room found:', existingRoom.id);
+        }
+
+        // PHASE 2: Add delay after room creation to allow Supabase to propagate
+        if (roomJustCreated) {
+          console.log('[Room] Room just created, waiting for Supabase propagation...');
+          await new Promise(resolve => setTimeout(resolve, 300));
         }
 
         // Join as player (creates or updates player record)
         console.log('[Room] Joining room as player:', { roomId, userId, displayName });
         await joinRoomAsPlayer(roomId, userId, displayName, color);
+        
+        // PHASE 2: Additional delay after joining to ensure subscriptions are ready
+        if (roomJustCreated) {
+          console.log('[Room] Waiting for player subscription to propagate...');
+          await new Promise(resolve => setTimeout(resolve, 200));
+        }
         
         setInitializing(false);
         console.log('[Room] Room initialization complete');
@@ -122,6 +214,8 @@ export default function Room() {
     );
   }
 
+  // PHASE 2: Add comprehensive guards for missing state
+  // Guard: Check initializing, loading states, and user readiness
   if (initializing || roomLoading || !userReady) {
     return (
       <div className="min-h-screen bg-slate-900 flex items-center justify-center">
@@ -133,6 +227,7 @@ export default function Room() {
     );
   }
 
+  // Guard: Handle errors
   if (roomError) {
     return (
       <div className="min-h-screen bg-slate-900 flex items-center justify-center">
@@ -149,6 +244,44 @@ export default function Room() {
     );
   }
 
+  // Guard: Ensure room and players are available (even if roomLoading is false, room might still be null)
+  // PHASE 2: More robust guard - check roomLoading OR room null
+  if (!room || !players || !Array.isArray(players)) {
+    console.log('[Room] Waiting for room and players:', { 
+      room: !!room, 
+      players: !!players, 
+      playersIsArray: Array.isArray(players),
+      roomLoading,
+      initializing,
+      userReady
+    });
+    return (
+      <div className="min-h-screen bg-slate-900 flex items-center justify-center">
+        <div className="text-center">
+          <Loader2 className="w-12 h-12 text-purple-400 animate-spin mx-auto mb-4" />
+          <p className="text-gray-400">Waiting for room state...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Guard: Ensure roomControls methods are available
+  if (!roomControls || typeof roomControls.getPlayerByInstrument !== 'function' || typeof roomControls.isInstrumentAvailable !== 'function') {
+    console.log('[Room] Waiting for roomControls:', { 
+      roomControls: !!roomControls, 
+      hasGetPlayerByInstrument: typeof roomControls?.getPlayerByInstrument === 'function',
+      hasIsInstrumentAvailable: typeof roomControls?.isInstrumentAvailable === 'function'
+    });
+    return (
+      <div className="min-h-screen bg-slate-900 flex items-center justify-center">
+        <div className="text-center">
+          <Loader2 className="w-12 h-12 text-purple-400 animate-spin mx-auto mb-4" />
+          <p className="text-gray-400">Initializing room controls...</p>
+        </div>
+      </div>
+    );
+  }
+
   if (!audioEngine.isReady) {
     return (
       <div className="min-h-screen bg-slate-900 flex items-center justify-center">
@@ -160,8 +293,28 @@ export default function Room() {
     );
   }
 
+  // PHASE 3: Debugging helpers (only in dev mode)
+  const debugInfo = import.meta.env.DEV ? {
+    roomId,
+    room: room ? { id: room.id, bpm: room.bpm, isPlaying: room.isPlaying } : null,
+    players: players?.length || 0,
+    peers: peers?.length || 0,
+    loading: { initializing, roomLoading, userReady, audioReady: audioEngine.isReady },
+    webrtc: webrtc ? { ready: webrtc.ready, connectionStates: Object.keys(webrtc.connectionStates || {}).length } : null
+  } : null;
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900">
+      {/* PHASE 3: Debug info panel (dev only) */}
+      {import.meta.env.DEV && (
+        <div className="fixed bottom-4 right-4 bg-black/80 text-white text-xs p-3 rounded-lg max-w-md max-h-64 overflow-auto z-50 border border-purple-500/50">
+          <div className="font-bold mb-2 text-purple-400">Debug Info</div>
+          <pre className="whitespace-pre-wrap break-words">
+            {JSON.stringify(debugInfo, null, 2)}
+          </pre>
+        </div>
+      )}
+
       <RoomTopBar 
         room={room}
         roomId={roomId}

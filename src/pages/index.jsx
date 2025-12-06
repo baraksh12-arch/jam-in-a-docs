@@ -6,6 +6,8 @@ import Room from "./Room";
 
 import Setup from "./Setup";
 
+import ErrorBoundary from "../components/ErrorBoundary";
+
 import { BrowserRouter as Router, Route, Routes, useLocation } from 'react-router-dom';
 
 const PAGES = {
@@ -45,7 +47,11 @@ function PagesContent() {
                 
                 <Route path="/Landing" element={<Landing />} />
                 
-                <Route path="/Room" element={<Room />} />
+                <Route path="/Room" element={
+                  <ErrorBoundary>
+                    <Room />
+                  </ErrorBoundary>
+                } />
                 
                 <Route path="/Setup" element={<Setup />} />
                 

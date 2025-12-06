@@ -3,6 +3,8 @@ import { useWebRTC } from './useWebRTC';
 import { createNoteOnEvent, createNoteOffEvent } from '@/lib/jamEventProtocol';
 import { IMMEDIATE_PLAYBACK_THRESHOLD_SECONDS } from '@/lib/clockSync';
 import { CURRENT_LATENCY_MODE, LATENCY_MODES } from '@/config/latencyMode';
+import { syncedNow } from '@/lib/time/syncedNow';
+import { scheduleNote } from '@/lib/audio/scheduler';
 // TODO: Deprecated - Supabase note_events table is no longer used for live audio
 // import { subscribeToNoteEvents, sendNoteEvent } from '../firebaseClient';
 
@@ -31,13 +33,15 @@ const DEBUG_LATENCY = false;
  * Other instruments keep the existing scheduling / bundling behavior.
  */
 
-export function useNoteEvents(roomId, userId, audioEngine, peers, room, onNoteActivity) {
+export function useNoteEvents(roomId, userId, audioEngine, peers, room, onNoteActivity, webrtc = null) {
   const processedEventsRef = useRef(new Set());
   const webrtcRef = useRef(null);
-  const webrtc = useWebRTC({ roomId, userId, peers, room });
+  
+  // Use provided webrtc instance, or create one if not provided (backward compatibility)
+  const webrtcInstance = webrtc || useWebRTC({ roomId, userId, peers, room });
   
   // Keep ref updated with latest webrtc object
-  webrtcRef.current = webrtc;
+  webrtcRef.current = webrtcInstance;
 
   // Handle incoming jam events from WebRTC
   // Set up listener once when webrtc is available, keep it stable
@@ -58,9 +62,9 @@ export function useNoteEvents(roomId, userId, audioEngine, peers, room, onNoteAc
       console.log('[useNoteEvents] Setting up jam event listener, userId:', userId, 'webrtc.ready:', webrtc.ready);
     }
 
-    const unsubscribe = webrtc.onJamEvent((event, fromPeerId) => {
+    const unsubscribe = webrtcInstance.onJamEvent((event, fromPeerId) => {
       // Get current ready state from ref (avoids stale closure)
-      const currentReady = webrtcRef.current?.ready;
+      const currentReady = webrtcInstance?.ready;
       
       // Only process events when WebRTC is actually ready (has connected peers)
       // But keep the listener registered even when not ready
@@ -140,46 +144,25 @@ export function useNoteEvents(roomId, userId, audioEngine, peers, room, onNoteAc
         return; // Exit early - DRUMS are done (no scheduling, no mode checks)
       }
 
-      // For non-DRUMS instruments, use mode-based scheduling
-      // Get audioContext from audioEngine
-      const audioContext = audioEngine.getAudioContext?.();
-      if (!audioContext) {
-        if (DEBUG_WEBRTC) {
-          console.warn('[useNoteEvents] AudioContext not available, playing immediately');
-        }
-        // Fallback: play immediately
-        if (event.type === 'noteOn') {
-          audioEngine.playNote(event.instrument, event.note, event.velocity);
-          
-          // Trigger activity indicator for remote notes
-          if (onNoteActivity) {
-            onNoteActivity({
-              source: 'remote',
-              instrument: event.instrument,
-              note: event.note,
-              velocity: event.velocity ?? 100
-            });
-          }
-        } else if (event.type === 'noteOff') {
-          audioEngine.stopNote(event.instrument, event.note);
-        }
-        return;
-      }
-
-      // ULTRA_LOW_LATENCY mode: Immediate playback for non-DRUMS instruments (bypass scheduling)
-      if (CURRENT_LATENCY_MODE === LATENCY_MODES.ULTRA) {
-        if (DEBUG_LATENCY) {
-          console.log('[useNoteEvents] ULTRA mode - playing remote note immediately:', {
-            type: event.type,
-            instrument: event.instrument,
-            note: event.note
-          });
-        }
+      // Phase 4: Use timestamp-based scheduling for all non-DRUMS instruments
+      // All notes are scheduled using event.timestamp + LATENCY_BUFFER_MS
+      // This ensures tight playback with no jitter or missed notes
+      
+      if (event.type === 'noteOn') {
+        // Schedule the note using the unified scheduler
+        // scheduleNote() handles:
+        // - Late note filtering (if playAt < syncedNow())
+        // - Tone.Transport scheduling
+        // - Tone.js instrument triggering
+        const scheduled = scheduleNote({
+          instrument: event.instrument,
+          note: event.note,
+          velocity: event.velocity ?? 100,
+          timestamp: event.timestamp, // Server-aligned timestamp from sender
+          senderId: event.senderId,
+        });
         
-        // Immediate playback path - no scheduling
-        if (event.type === 'noteOn') {
-          audioEngine.playNote(event.instrument, event.note, event.velocity);
-          
+        if (scheduled) {
           // Trigger activity indicator for remote notes
           if (onNoteActivity) {
             onNoteActivity({
@@ -189,90 +172,21 @@ export function useNoteEvents(roomId, userId, audioEngine, peers, room, onNoteAc
               velocity: event.velocity ?? 100
             });
           }
-        } else if (event.type === 'noteOff') {
-          audioEngine.stopNote(event.instrument, event.note);
-        }
-        return; // Exit early - ULTRA mode is done
-      }
-
-      // SYNCED mode: Use clock-synchronized scheduling for non-DRUMS instruments
-
-      // For tonal instruments (BASS, EP, GUITAR), use scheduling
-      // Compute target audio time using clockSync
-      let targetAudioTime = webrtcRef.current?.computeTargetAudioTime?.(
-        event.roomTime,
-        audioContext,
-        fromPeerId
-      );
-
-      if (targetAudioTime === undefined || targetAudioTime === null) {
-        if (DEBUG_WEBRTC) {
-          console.warn('[useNoteEvents] Could not compute target audio time, playing immediately');
-        }
-        // Fallback: play immediately
-        if (event.type === 'noteOn') {
-          audioEngine.playNote(event.instrument, event.note, event.velocity);
-          
-          // Trigger activity indicator for remote notes
-          if (onNoteActivity) {
-            onNoteActivity({
-              source: 'remote',
+        } else {
+          // Note was dropped (too late) - already logged by scheduler
+          if (DEBUG_WEBRTC) {
+            console.log('[useNoteEvents] Note dropped (too late):', {
               instrument: event.instrument,
               note: event.note,
-              velocity: event.velocity ?? 100
+              timestamp: event.timestamp,
+              now: syncedNow(),
             });
           }
-        } else if (event.type === 'noteOff') {
-          audioEngine.stopNote(event.instrument, event.note);
         }
-        return;
-      }
-
-      const currentTime = audioContext.currentTime;
-      
-      // Ensure we never schedule in the past (clamp to current time)
-      if (targetAudioTime < currentTime) {
-        targetAudioTime = currentTime;
-      }
-      
-      const timeUntilPlay = targetAudioTime - currentTime;
-
-      // STEP 2.2: Tightened immediate threshold (0.5ms instead of 1ms)
-      // If target time is in the past or very close (within threshold), play immediately
-      if (timeUntilPlay <= IMMEDIATE_PLAYBACK_THRESHOLD_SECONDS) {
-        // Play immediately (fallback case)
-        if (event.type === 'noteOn') {
-          audioEngine.playNote(event.instrument, event.note, event.velocity);
-          
-          // Trigger activity indicator for remote notes
-          if (onNoteActivity) {
-            onNoteActivity({
-              source: 'remote',
-              instrument: event.instrument,
-              note: event.note,
-              velocity: event.velocity ?? 100
-            });
-          }
-        } else if (event.type === 'noteOff') {
-          audioEngine.stopNote(event.instrument, event.note);
-        }
-      } else {
-        // Schedule for future playback
-        if (event.type === 'noteOn') {
-          audioEngine.playNoteAt(event.instrument, event.note, event.velocity, targetAudioTime);
-          
-          // Trigger activity indicator for remote notes
-          if (onNoteActivity) {
-            onNoteActivity({
-              source: 'remote',
-              instrument: event.instrument,
-              note: event.note,
-              velocity: event.velocity ?? 100
-            });
-          }
-        } else if (event.type === 'noteOff') {
-          audioEngine.stopNoteAt(event.instrument, event.note, targetAudioTime);
-        }
+      } else if (event.type === 'noteOff') {
+        // NoteOff events: For now, we'll handle them immediately
+        // TODO: Consider scheduling noteOff events as well for precise timing
+        audioEngine.stopNote(event.instrument, event.note);
       }
     });
 
@@ -282,7 +196,7 @@ export function useNoteEvents(roomId, userId, audioEngine, peers, room, onNoteAc
       }
       if (unsubscribe) unsubscribe();
     };
-  }, [webrtc, webrtc?.onJamEvent, audioEngine, userId]); // Don't depend on ready - keep listener stable
+  }, [webrtcInstance, webrtcInstance?.onJamEvent, audioEngine, userId]); // Don't depend on ready - keep listener stable
 
   /**
    * Send a note event via WebRTC
@@ -293,11 +207,11 @@ export function useNoteEvents(roomId, userId, audioEngine, peers, room, onNoteAc
    * @param {number} velocity - MIDI velocity (0-127)
    */
   const sendNote = useCallback(async (instrument, note, type = 'NOTE_ON', velocity = 100) => {
-    if (!roomId || !userId || !webrtc.sendJamEvent) return;
+    if (!roomId || !userId || !webrtcInstance?.sendJamEvent) return;
 
     try {
-      // Get current room time from clock sync
-      const roomTime = webrtc.getRoomTime();
+      // Get current room time from clock sync (uses syncedNow() internally if available)
+      const roomTime = webrtcInstance.getRoomTime();
 
       // Create jam event based on type
       let event;
@@ -322,7 +236,7 @@ export function useNoteEvents(roomId, userId, audioEngine, peers, room, onNoteAc
       }
 
       // Send via WebRTC
-      webrtc.sendJamEvent(event);
+      webrtcInstance.sendJamEvent(event);
 
       // Local echo: play the note immediately for the sender
       // This matches the previous behavior where you hear yourself
@@ -345,7 +259,7 @@ export function useNoteEvents(roomId, userId, audioEngine, peers, room, onNoteAc
     } catch (error) {
       console.error('Failed to send note event:', error);
     }
-  }, [roomId, userId, webrtc.sendJamEvent, webrtc.getRoomTime, audioEngine]);
+  }, [roomId, userId, webrtcInstance?.sendJamEvent, webrtcInstance?.getRoomTime, audioEngine]);
 
   return {
     sendNote

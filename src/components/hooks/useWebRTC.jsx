@@ -2,6 +2,8 @@ import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { initSignaling } from '@/lib/webrtcSignaling';
 import { WebRTCManager } from '@/lib/webrtcManager';
 import { ClockSync } from '@/lib/clockSync';
+import { ClockSyncManager } from '@/lib/time/syncClock';
+import { initSyncedNow } from '@/lib/time/syncedNow';
 
 /**
  * useWebRTC Hook
@@ -33,60 +35,98 @@ export function useWebRTC({ roomId, userId, peers = [], room = null }) {
   const signalingRef = useRef(null);
   const managerRef = useRef(null);
   const clockSyncRef = useRef(null);
+  const clockSyncManagerRef = useRef(null); // New shared clock sync manager
   const jamEventCallbacksRef = useRef(new Set());
+  const claimEventCallbacksRef = useRef(new Set());
 
   // Initialize WebRTC components (only on client)
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    if (!roomId || !userId) return;
-
-    // Initialize clock sync with userId
-    const clockSync = new ClockSync(userId);
-    clockSyncRef.current = clockSync;
-
-    // Get room start timestamp from room data
-    // Fallback to current time if room data not available yet
-    if (room?.createdAt) {
-      const roomStartMs = new Date(room.createdAt).getTime();
-      clockSync.setRoomStartTimestamp(roomStartMs);
-    } else if (room?.created_at) {
-      // Handle snake_case format from database
-      const roomStartMs = new Date(room.created_at).getTime();
-      clockSync.setRoomStartTimestamp(roomStartMs);
-    } else {
-      // Fallback: use current time (will be corrected when room data loads)
-      clockSync.setRoomStartTimestamp(Date.now());
+    if (!roomId || !userId) {
+      console.log('[useWebRTC] Skipping initialization - missing roomId or userId:', { roomId, userId });
+      return;
     }
 
-    // Initialize signaling
-    const signaling = initSignaling(roomId, userId);
-    signalingRef.current = signaling;
+    // PHASE 2: Wrap initialization in try-catch to prevent crashes
+    // PHASE 2: Ensure peers is always an array (even if empty) - this is safe
+    console.log('[useWebRTC] Initializing with:', { roomId, userId, peersCount: peers?.length || 0 });
+    try {
+      // Initialize clock sync with userId (for peer latency measurement)
+      const clockSync = new ClockSync(userId);
+      clockSyncRef.current = clockSync;
 
-    // Initialize WebRTC manager
-    const manager = new WebRTCManager({
-      roomId,
-      userId,
-      signaling,
-      clockSync, // Pass clockSync for ping/pong handling
-      onJamEvent: (event, fromPeerId) => {
-        // Notify all registered callbacks
-        jamEventCallbacksRef.current.forEach(callback => {
-          try {
-            callback(event, fromPeerId);
-          } catch (error) {
-            console.error('Error in jam event callback:', error);
-          }
-        });
-      },
-      onPeerConnectionChange: (peerId, state) => {
-        setConnectionStates(prev => {
-          const next = new Map(prev);
-          next.set(peerId, state);
-          return next;
-        });
+      // Initialize shared clock sync manager (for server time synchronization)
+      const clockSyncManager = new ClockSyncManager(roomId, userId);
+      clockSyncManagerRef.current = clockSyncManager;
+      
+      // Initialize syncedNow() with the manager
+      initSyncedNow(clockSyncManager);
+      
+      // Start clock synchronization
+      clockSyncManager.start().catch(error => {
+        console.error('[useWebRTC] Failed to start clock sync:', error);
+        // Continue anyway - will fall back to local time
+      });
+
+      // Get room start timestamp from room data
+      // Fallback to current time if room data not available yet
+      if (room?.createdAt) {
+        const roomStartMs = new Date(room.createdAt).getTime();
+        clockSync.setRoomStartTimestamp(roomStartMs);
+      } else if (room?.created_at) {
+        // Handle snake_case format from database
+        const roomStartMs = new Date(room.created_at).getTime();
+        clockSync.setRoomStartTimestamp(roomStartMs);
+      } else {
+        // Fallback: use current time (will be corrected when room data loads)
+        clockSync.setRoomStartTimestamp(Date.now());
       }
-    });
-    managerRef.current = manager;
+
+      // Initialize signaling
+      const signaling = initSignaling(roomId, userId);
+      signalingRef.current = signaling;
+
+      // Initialize WebRTC manager
+      const manager = new WebRTCManager({
+        roomId,
+        userId,
+        signaling,
+        clockSync, // Pass clockSync for ping/pong handling
+        onJamEvent: (event, fromPeerId) => {
+          // Notify all registered callbacks
+          jamEventCallbacksRef.current.forEach(callback => {
+            try {
+              callback(event, fromPeerId);
+            } catch (error) {
+              console.error('Error in jam event callback:', error);
+            }
+          });
+        },
+        onClaimEvent: (event) => {
+          // Notify all registered claim event callbacks
+          claimEventCallbacksRef.current.forEach(callback => {
+            try {
+              callback(event);
+            } catch (error) {
+              console.error('Error in claim event callback:', error);
+            }
+          });
+        },
+        onPeerConnectionChange: (peerId, state) => {
+          setConnectionStates(prev => {
+            const next = new Map(prev);
+            next.set(peerId, state);
+            return next;
+          });
+        }
+      });
+      managerRef.current = manager;
+      
+      console.log('[useWebRTC] Successfully initialized WebRTC components');
+    } catch (error) {
+      console.error('[useWebRTC] Error initializing WebRTC components:', error);
+      // Don't throw - allow component to render with degraded functionality
+    }
 
     return () => {
       // Cleanup on unmount
@@ -98,8 +138,13 @@ export function useWebRTC({ roomId, userId, peers = [], room = null }) {
         signalingRef.current.disconnect();
         signalingRef.current = null;
       }
+      if (clockSyncManagerRef.current) {
+        clockSyncManagerRef.current.stop();
+        clockSyncManagerRef.current = null;
+      }
       clockSyncRef.current = null;
       jamEventCallbacksRef.current.clear();
+      claimEventCallbacksRef.current.clear();
     };
   }, [roomId, userId]); // Only re-init if roomId or userId changes
 
@@ -119,6 +164,12 @@ export function useWebRTC({ roomId, userId, peers = [], room = null }) {
     if (!managerRef.current) {
       console.log('[useWebRTC] Manager not initialized yet');
       return;
+    }
+
+    // PHASE 2: Ensure peers is always an array
+    if (!Array.isArray(peers)) {
+      console.warn('[useWebRTC] Peers is not an array, using empty array:', peers);
+      return; // Will retry when peers becomes an array
     }
 
     const manager = managerRef.current;
@@ -197,6 +248,31 @@ export function useWebRTC({ roomId, userId, peers = [], room = null }) {
   }, []);
 
   /**
+   * Register callback for incoming claim events
+   * 
+   * @param {function(Object): void} callback - Callback function
+   * @returns {function(): void} Unsubscribe function
+   */
+  const onClaimEvent = useCallback((callback) => {
+    claimEventCallbacksRef.current.add(callback);
+    
+    return () => {
+      claimEventCallbacksRef.current.delete(callback);
+    };
+  }, []);
+
+  /**
+   * Send a claim event to all connected peers
+   * 
+   * @param {Object} event - Claim event object
+   */
+  const sendClaimEvent = useCallback((event) => {
+    if (managerRef.current) {
+      managerRef.current.sendClaimEvent(event);
+    }
+  }, []);
+
+  /**
    * Get current room time in seconds
    * 
    * @returns {number} Room time in seconds
@@ -250,6 +326,8 @@ export function useWebRTC({ roomId, userId, peers = [], room = null }) {
     connectionStates: Object.fromEntries(connectionStates),
     sendJamEvent,
     onJamEvent,
+    sendClaimEvent,
+    onClaimEvent,
     getRoomTime,
     getLatency,
     computeTargetAudioTime
