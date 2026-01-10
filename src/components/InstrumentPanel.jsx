@@ -37,7 +37,8 @@ const InstrumentPanel = forwardRef(function InstrumentPanel({
   audioEngine, 
   sendNote,
   isPlaying,
-  onActivity
+  onActivity,
+  focusModeActive = false // Disable keyboard input when focus mode is active
 }, ref) {
   const [volume, setVolume] = useState(0.8);
   const [isMuted, setIsMuted] = useState(false);
@@ -220,7 +221,7 @@ const InstrumentPanel = forwardRef(function InstrumentPanel({
       </CardHeader>
 
       <CardContent>
-        {!player ? (
+        {!isMyInstrument && !player ? (
           <div className="py-12 text-center">
             <p className="text-white/50">Waiting for player...</p>
           </div>
@@ -228,12 +229,14 @@ const InstrumentPanel = forwardRef(function InstrumentPanel({
           <DrumPad 
             onNotePlay={handleNotePlay}
             disabled={!isMyInstrument}
+            disableKeyboard={focusModeActive}
           />
         ) : (
           <PianoKeyboard
             instrument={instrument}
             onNotePlay={handleNotePlay}
             disabled={!isMyInstrument}
+            disableKeyboard={focusModeActive}
           />
         )}
       </CardContent>

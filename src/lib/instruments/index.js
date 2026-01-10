@@ -60,7 +60,8 @@ export async function initAllInstruments() {
 }
 
 /**
- * Trigger a note on the specified instrument
+ * Trigger a note ON (attack) on the specified instrument
+ * Note will sustain until releaseNote is called - natural, expressive playing
  * 
  * @param {string} instrument - Instrument name: 'DRUMS', 'BASS', 'EP', 'GUITAR'
  * @param {string|number} note - MIDI note (0-127) or drum pad ID (for DRUMS)
@@ -88,6 +89,35 @@ export function triggerNote(instrument, note, time, velocity = 100) {
       break;
     default:
       console.warn(`[InstrumentManager] Unknown instrument: ${instrument}`);
+  }
+}
+
+/**
+ * Release a note (note off) - stops the sustain naturally
+ * Essential for expressive playing like Jacob Collier
+ * 
+ * @param {string} instrument - Instrument name
+ * @param {string|number} note - MIDI note or drum pad ID
+ * @param {number} time - Optional time for scheduled release
+ */
+export function releaseNote(instrument, note, time) {
+  if (!isInitialized) return;
+
+  switch (instrument) {
+    case 'DRUMS':
+      // Drums don't need release (they're percussive)
+      break;
+    case 'BASS':
+      bass.releaseNote?.(note, time);
+      break;
+    case 'EP':
+      piano.releaseNote?.(note, time);
+      break;
+    case 'GUITAR':
+      guitar.releaseNote?.(note, time);
+      break;
+    default:
+      break;
   }
 }
 

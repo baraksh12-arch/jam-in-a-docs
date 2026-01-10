@@ -320,11 +320,9 @@ export class ClockSync {
       if (pingTimestamp && msg.originalTimestamp === pingTimestamp) {
         const now = Date.now();
         const roundTripTime = now - pingTimestamp;
-        // Latency is half the RTT (one-way delay)
-        const latencyMs = roundTripTime / 2;
         
-        // Update latency estimate
-        this.updateLatency(fromPeerId, latencyMs);
+        // Update latency estimate (pass RTT, function will convert to one-way)
+        this.updateLatency(fromPeerId, roundTripTime);
         
         // Remove pending ping
         this.pendingPings.delete(fromPeerId);

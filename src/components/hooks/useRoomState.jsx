@@ -2,77 +2,74 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { 
   subscribeToRoom, 
   subscribeToPlayers,
-  updateRoom,
-  claimInstrument,
-  releaseInstrument
+  subscribeToCrowdMembers,
+  updateRoom as updateRoomSupabase,
+  claimInstrument as claimInstrumentSupabase,
+  releaseInstrument as releaseInstrumentSupabase
 } from '../firebaseClient';
 import { getClaimSyncManager } from '@/lib/instruments/claimSync';
 
 export function useRoomState(roomId, userId) {
   const [room, setRoom] = useState(null);
   const [players, setPlayers] = useState([]);
+  const [crowdMembers, setCrowdMembers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [wsConnected, setWsConnected] = useState(true); // Supabase realtime acts as "connected"
   
-  // Claim sync manager ref
   const claimSyncManagerRef = useRef(null);
-  const previousInstrumentRef = useRef(null); // Track previous instrument for reconnect
-  const webrtcRef = useRef(null); // WebRTC instance (set via setWebRTC)
+  const previousInstrumentRef = useRef(null);
+  const webrtcRef = useRef(null);
+  const [optimisticInstrument, setOptimisticInstrument] = useState(null);
+  const updateTimeoutRef = useRef(null);
 
+  // Supabase Realtime subscriptions for room and players
   useEffect(() => {
     if (!roomId) return;
 
+    console.log('[useRoomState] Setting up Supabase subscriptions for room:', roomId);
     setLoading(true);
     setError(null);
-    let unsubscribeRoom;
-    let unsubscribePlayers;
-
-    // PHASE 2: Add error handling for subscriptions
-    try {
-      unsubscribeRoom = subscribeToRoom(roomId, (roomData) => {
-        try {
-          if (roomData) {
-            setRoom(roomData);
-            setError(null);
-          } else {
-            setError('Room not found');
-          }
-          setLoading(false);
-        } catch (error) {
-          console.error('[useRoomState] Error in room subscription callback:', error);
-          setError('Error loading room data');
-          setLoading(false);
-        }
-      });
-
-      unsubscribePlayers = subscribeToPlayers(roomId, (playersData) => {
-        try {
-          console.log('[useRoomState] Players updated from subscription:', playersData.length, 'players');
-          // PHASE 2: Ensure playersData is always an array
-          const safePlayers = Array.isArray(playersData) ? playersData : [];
-          setPlayers(safePlayers);
-          
-          // Initialize claim sync manager from players data
-          if (claimSyncManagerRef.current) {
-            claimSyncManagerRef.current.initializeFromPlayers(safePlayers);
-          }
-        } catch (error) {
-          console.error('[useRoomState] Error in players subscription callback:', error);
-          setPlayers([]); // Set empty array on error
-        }
-      });
-    } catch (error) {
-      console.error('[useRoomState] Error setting up subscriptions:', error);
-      setError('Failed to subscribe to room data');
+    
+    // Subscribe to room changes
+    const unsubscribeRoom = subscribeToRoom(roomId, (roomData) => {
+      if (roomData) {
+        console.log('[useRoomState] Room data received:', roomData);
+        setRoom(roomData);
+        setError(null);
+        setWsConnected(true);
+      } else {
+        setError('Room not found');
+        setWsConnected(false);
+      }
       setLoading(false);
-    }
+    });
+
+    // Subscribe to players changes
+    const unsubscribePlayers = subscribeToPlayers(roomId, (playersData) => {
+      const safePlayers = Array.isArray(playersData) ? playersData : [];
+      console.log('[useRoomState] Players data received:', safePlayers.length, 'players');
+      setPlayers(safePlayers);
+      
+      if (claimSyncManagerRef.current) {
+        claimSyncManagerRef.current.initializeFromPlayers(safePlayers);
+      }
+    });
+
+    // Subscribe to crowd members
+    const unsubscribeCrowd = subscribeToCrowdMembers(roomId, (crowdData) => {
+      const safeCrowd = Array.isArray(crowdData) ? crowdData : [];
+      console.log('[useRoomState] Crowd data received:', safeCrowd.length, 'members');
+      setCrowdMembers(safeCrowd);
+    });
 
     return () => {
-      try {
-        if (unsubscribeRoom) unsubscribeRoom();
-        if (unsubscribePlayers) unsubscribePlayers();
-      } catch (error) {
-        console.error('[useRoomState] Error cleaning up subscriptions:', error);
+      console.log('[useRoomState] Cleaning up subscriptions');
+      unsubscribeRoom();
+      unsubscribePlayers();
+      unsubscribeCrowd();
+      if (updateTimeoutRef.current) {
+        clearTimeout(updateTimeoutRef.current);
       }
     };
   }, [roomId]);
@@ -81,17 +78,43 @@ export function useRoomState(roomId, userId) {
     const playerUserId = p.userId || p.user_id || p.id;
     return playerUserId === userId;
   });
+  
+  const effectiveInstrument = optimisticInstrument || currentPlayer?.instrument;
+  
+  const playersWithOptimistic = optimisticInstrument
+    ? (() => {
+        const existingPlayerIndex = players.findIndex(p => {
+          const playerUserId = p.userId || p.user_id || p.id;
+          return playerUserId === userId;
+        });
+        
+        if (existingPlayerIndex >= 0) {
+          return players.map((p, index) => 
+            index === existingPlayerIndex ? { ...p, instrument: optimisticInstrument } : p
+          );
+        } else if (currentPlayer) {
+          return [...players, { ...currentPlayer, instrument: optimisticInstrument }];
+        }
+        return players;
+      })()
+    : players;
+  
+  // Clear optimistic update when real data arrives
+  useEffect(() => {
+    if (currentPlayer?.instrument === optimisticInstrument) {
+      setOptimisticInstrument(null);
+    }
+  }, [currentPlayer?.instrument, optimisticInstrument]);
 
-  // Build peers array for useWebRTC (exclude self, only players)
   const peers = players
     .filter(p => {
       const playerUserId = p.userId || p.user_id || p.id;
-      const isPlayer = p.isPlayer !== false && p.is_player !== false; // Check both formats
+      const isPlayer = p.isPlayer !== false && p.is_player !== false;
       return playerUserId && playerUserId !== userId && isPlayer;
     })
     .map(p => ({
       userId: p.userId || p.user_id || p.id,
-      user_id: p.user_id || p.userId, // Include both for compatibility
+      user_id: p.user_id || p.userId,
       id: p.id,
       displayName: p.displayName || p.display_name,
       instrument: p.instrument,
@@ -100,151 +123,186 @@ export function useRoomState(roomId, userId) {
       color: p.color
     }));
 
-  // Debug log when peers change (only in dev, and not too spammy)
-  // Use a ref to track previous peer count to avoid spam
-  const prevPeerCountRef = useRef(0);
-  useEffect(() => {
-    if (import.meta.env.DEV && peers.length !== prevPeerCountRef.current) {
-      const peerSummary = peers.map(p => `${p.userId}:${p.instrument || 'none'}`).join(', ');
-      if (peerSummary || peers.length > 0) {
-        console.log('[useRoomState] Peers derived from players:', peerSummary || 'none');
-      }
-      prevPeerCountRef.current = peers.length;
+  const isInstrumentAvailable = useCallback((instrument) => {
+    return !playersWithOptimistic.some(p => p.instrument === instrument);
+  }, [playersWithOptimistic]);
+
+  const getPlayerByInstrument = useCallback((instrument) => {
+    return playersWithOptimistic.find(p => p.instrument === instrument);
+  }, [playersWithOptimistic]);
+
+  // Room controls with optimistic updates
+  const setBpm = useCallback(async (bpm) => {
+    const clampedBpm = Math.max(40, Math.min(240, bpm));
+    // Optimistic update
+    setRoom(prev => prev ? { ...prev, bpm: clampedBpm } : null);
+    
+    try {
+      await updateRoomSupabase(roomId, { bpm: clampedBpm });
+    } catch (err) {
+      console.error('[useRoomState] Error updating BPM:', err);
+      // The subscription will correct if there's a mismatch
     }
-  }, [peers.length, peers]);
+  }, [roomId]);
 
-  const isInstrumentAvailable = (instrument) => {
-    return !players.some(p => p.instrument === instrument);
-  };
+  const setKey = useCallback(async (key) => {
+    // Optimistic update
+    setRoom(prev => prev ? { ...prev, key } : null);
+    
+    try {
+      await updateRoomSupabase(roomId, { key });
+    } catch (err) {
+      console.error('[useRoomState] Error updating key:', err);
+    }
+  }, [roomId]);
 
-  const getPlayerByInstrument = (instrument) => {
-    return players.find(p => p.instrument === instrument);
-  };
+  const setScale = useCallback(async (scale) => {
+    // Optimistic update
+    setRoom(prev => prev ? { ...prev, scale } : null);
+    
+    try {
+      await updateRoomSupabase(roomId, { scale });
+    } catch (err) {
+      console.error('[useRoomState] Error updating scale:', err);
+    }
+  }, [roomId]);
 
-  const setBpm = async (bpm) => {
-    await updateRoom(roomId, { bpm: Math.max(40, Math.min(240, bpm)) });
-  };
+  const togglePlay = useCallback(async () => {
+    const newPlaying = !room?.isPlaying;
+    // Optimistic update
+    setRoom(prev => prev ? { ...prev, isPlaying: newPlaying } : null);
+    
+    try {
+      await updateRoomSupabase(roomId, { isPlaying: newPlaying });
+    } catch (err) {
+      console.error('[useRoomState] Error toggling play:', err);
+    }
+  }, [roomId, room?.isPlaying]);
 
-  const setKey = async (key) => {
-    await updateRoom(roomId, { key });
-  };
+  const toggleMetronome = useCallback(async () => {
+    const newMetronome = !room?.metronomeOn;
+    // Optimistic update
+    setRoom(prev => prev ? { ...prev, metronomeOn: newMetronome } : null);
+    
+    try {
+      await updateRoomSupabase(roomId, { metronomeOn: newMetronome });
+    } catch (err) {
+      console.error('[useRoomState] Error toggling metronome:', err);
+    }
+  }, [roomId, room?.metronomeOn]);
 
-  const setScale = async (scale) => {
-    await updateRoom(roomId, { scale });
-  };
-
-  const togglePlay = async () => {
-    await updateRoom(roomId, { isPlaying: !room?.isPlaying });
-  };
-
-  const toggleMetronome = async () => {
-    await updateRoom(roomId, { metronomeOn: !room?.metronomeOn });
-  };
-
-  // Initialize claim sync manager when webrtc is available
+  // Initialize ClaimSyncManager when WebRTC becomes available
   useEffect(() => {
     if (!roomId || !userId || !webrtcRef.current) return;
 
-    // PHASE 2: Wrap initialization in try-catch to prevent crashes
-    try {
-      const webrtc = webrtcRef.current;
-      const claimSyncManager = getClaimSyncManager(roomId, userId);
-      claimSyncManagerRef.current = claimSyncManager;
+    const webrtc = webrtcRef.current;
+    const claimSyncManager = getClaimSyncManager(roomId, userId);
+    claimSyncManagerRef.current = claimSyncManager;
 
-      // Set up send function (via WebRTC)
-      const sendClaimEvent = (event) => {
-        if (webrtc.sendClaimEvent) {
-          webrtc.sendClaimEvent(event);
-        }
-      };
-
-      // Set up receive function (via WebRTC)
-      const onClaimEvent = (event) => {
-        if (claimSyncManagerRef.current) {
-          claimSyncManagerRef.current.handleClaimEvent(event);
-        }
-      };
-
-      // Start claim sync manager
-      claimSyncManager.start(sendClaimEvent, onClaimEvent);
-
-      // Register for claim events from WebRTC
-      const unsubscribe = webrtc.onClaimEvent?.(onClaimEvent);
-
-      // Initialize from current players
-      if (players.length > 0) {
-        claimSyncManager.initializeFromPlayers(players);
+    const sendClaimEvent = (event) => {
+      if (webrtc.sendClaimEvent) {
+        webrtc.sendClaimEvent(event);
       }
+    };
 
-      // Restore previous claim on reconnect
-      const currentPlayer = players.find(p => {
-        const playerUserId = p.userId || p.user_id || p.id;
-        return playerUserId === userId;
-      });
-      if (currentPlayer?.instrument) {
-        previousInstrumentRef.current = currentPlayer.instrument;
-      } else if (previousInstrumentRef.current) {
-        // Try to restore previous claim
-        claimSyncManager.restoreClaim(previousInstrumentRef.current);
+    const onClaimEvent = (event) => {
+      if (claimSyncManagerRef.current) {
+        claimSyncManagerRef.current.handleClaimEvent(event);
       }
+    };
 
-      console.log('[useRoomState] ClaimSyncManager initialized successfully');
+    claimSyncManager.start(sendClaimEvent, onClaimEvent);
+    const unsubscribe = webrtc.onClaimEvent?.(onClaimEvent);
 
-      return () => {
-        if (unsubscribe) unsubscribe();
-        claimSyncManager.stop();
-      };
-    } catch (error) {
-      console.error('[useRoomState] Error initializing ClaimSyncManager:', error);
-      // Don't throw - allow component to render with degraded functionality
+    return () => {
+      if (unsubscribe) unsubscribe();
+      claimSyncManager.stop();
+    };
+  }, [roomId, userId]);
+
+  // Update claim map when players change
+  useEffect(() => {
+    if (!claimSyncManagerRef.current || !players.length) return;
+    
+    claimSyncManagerRef.current.initializeFromPlayers(players);
+
+    const cp = players.find(p => {
+      const playerUserId = p.userId || p.user_id || p.id;
+      return playerUserId === userId;
+    });
+    
+    if (cp?.instrument) {
+      previousInstrumentRef.current = cp.instrument;
+    } else if (previousInstrumentRef.current && claimSyncManagerRef.current) {
+      claimSyncManagerRef.current.restoreClaim(previousInstrumentRef.current);
     }
-  }, [roomId, userId, players]);
+  }, [players, userId]);
   
-  // Setter function to provide webrtc instance (called from Room.jsx)
   const setWebRTC = useCallback((webrtc) => {
     webrtcRef.current = webrtc;
   }, []);
 
-  const claimMyInstrument = async (instrument) => {
+  const claimMyInstrument = useCallback(async (instrument) => {
     if (!userId) return;
     
-    // Update database (existing behavior)
-    await claimInstrument(roomId, userId, instrument);
+    // Optimistic update for instant feedback
+    setOptimisticInstrument(instrument);
+    previousInstrumentRef.current = instrument;
     
-    // Broadcast claim event via WebRTC (Phase 6)
-    if (claimSyncManagerRef.current) {
-      claimSyncManagerRef.current.broadcastClaim(instrument, true);
-      previousInstrumentRef.current = instrument;
+    try {
+      await claimInstrumentSupabase(roomId, userId, instrument);
+      console.log('[useRoomState] Instrument claimed successfully:', instrument);
+      
+      if (claimSyncManagerRef.current) {
+        claimSyncManagerRef.current.broadcastClaim(instrument, true);
+      }
+    } catch (err) {
+      console.error('[useRoomState] Error claiming instrument:', err);
+      setOptimisticInstrument(null);
+      throw err;
     }
-  };
+  }, [roomId, userId]);
 
-  const releaseMyInstrument = async () => {
+  const releaseMyInstrument = useCallback(async () => {
     if (!userId) return;
     
-    // Get current instrument before releasing
-    const currentPlayer = players.find(p => {
-      const playerUserId = p.userId || p.user_id || p.id;
-      return playerUserId === userId;
-    });
-    const previousInstrument = currentPlayer?.instrument;
+    const previousInstrument = effectiveInstrument;
+    setOptimisticInstrument(null);
+    previousInstrumentRef.current = null;
     
-    // Update database (existing behavior)
-    await releaseInstrument(roomId, userId);
-    
-    // Broadcast release event via WebRTC (Phase 6)
-    if (claimSyncManagerRef.current && previousInstrument) {
-      claimSyncManagerRef.current.broadcastClaim(previousInstrument, false);
-      previousInstrumentRef.current = null;
+    try {
+      await releaseInstrumentSupabase(roomId, userId);
+      
+      if (claimSyncManagerRef.current && previousInstrument) {
+        claimSyncManagerRef.current.broadcastClaim(previousInstrument, false);
+      }
+    } catch (err) {
+      console.error('[useRoomState] Error releasing instrument:', err);
     }
-  };
+  }, [roomId, userId, effectiveInstrument]);
 
+  // joinWsRoom is a no-op since we use Supabase realtime
+  // But we keep it for API compatibility
+  const joinWsRoom = useCallback((displayName, color, asCrowd = false) => {
+    console.log('[useRoomState] joinWsRoom called (using Supabase realtime):', { displayName, asCrowd });
+    setWsConnected(true);
+  }, []);
+
+  const getSocket = useCallback(() => null, []);
+
+  const currentPlayerWithInstrument = currentPlayer 
+    ? { ...currentPlayer, instrument: effectiveInstrument }
+    : (effectiveInstrument ? { userId, user_id: userId, id: userId, instrument: effectiveInstrument } : null);
+  
   return {
     room,
-    players,
-    peers, // Exposed for useWebRTC (filtered, excludes self)
-    currentPlayer,
+    players: playersWithOptimistic,
+    crowdMembers,
+    peers,
+    currentPlayer: currentPlayerWithInstrument,
     loading,
     error,
+    wsConnected,
     isInstrumentAvailable,
     getPlayerByInstrument,
     setBpm,
@@ -254,6 +312,8 @@ export function useRoomState(roomId, userId) {
     toggleMetronome,
     claimMyInstrument,
     releaseMyInstrument,
-    setWebRTC // Expose setter for webrtc instance
+    setWebRTC,
+    joinWsRoom,
+    getSocket,
   };
 }

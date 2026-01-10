@@ -11,7 +11,7 @@ const DRUM_PADS = [
   { id: 'clap', label: 'Clap', key: 'f' }
 ];
 
-export default function DrumPad({ onNotePlay, disabled }) {
+export default function DrumPad({ onNotePlay, disabled, disableKeyboard = false }) {
   const [activePads, setActivePads] = useState(new Set());
 
   const handlePadPress = (padId) => {
@@ -29,24 +29,22 @@ export default function DrumPad({ onNotePlay, disabled }) {
     }, 150);
   };
 
-  // Keyboard support
-  // Removed throttling: allow rapid hits on the same pad for fast patterns (16th notes, rolls)
-  // activePads is now only used for visual feedback, not input blocking
+  // Keyboard support - disabled when focus mode is active
   React.useEffect(() => {
-    if (disabled) return;
+    if (disabled || disableKeyboard) return;
 
     const handleKeyDown = (e) => {
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+      
       const pad = DRUM_PADS.find(p => p.key === e.key.toLowerCase());
       if (pad) {
-        // Always allow the hit - no blocking based on activePads
-        // This enables fast patterns like 16th notes and rolls
         handlePadPress(pad.id);
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [disabled]); // Removed activePads dependency - no longer needed for blocking
+  }, [disabled, disableKeyboard]);
 
   return (
     <div className="grid grid-cols-4 gap-2">

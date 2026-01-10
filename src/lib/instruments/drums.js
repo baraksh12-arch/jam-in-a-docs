@@ -201,7 +201,7 @@ export async function initDrums() {
         console.log('[Drums] Sampled kit ready (local)');
       },
       onerror: (error) => {
-        console.warn('[Drums] Sample loading error (non-fatal):', error);
+        console.warn('[Drums] Sample loading error (non-fatal, will continue with available samples):', error);
         // Continue even if some samples fail to load
       },
     }).toDestination();
@@ -233,6 +233,7 @@ export async function initDrums() {
 
 /**
  * Set the drum kit mode (sampled or electronic)
+ * Stops all active notes before switching to prevent stuck notes
  * 
  * @param {string} mode - 'sampled' | 'electronic'
  */
@@ -241,8 +242,32 @@ export function setDrumKitMode(mode) {
     console.warn(`[Drums] Invalid kit mode: ${mode}. Use '${DRUM_KIT_MODE_SAMPLED}' or '${DRUM_KIT_MODE_ELECTRONIC}'`);
     return;
   }
+  
+  // Stop all active notes before switching
+  stopAllNotes();
+  
   console.log('[Drums] Switching kit mode to:', mode);
   currentDrumKitMode = mode;
+}
+
+/**
+ * Stop all active notes on both sampled and electronic kits
+ * Prevents stuck notes when switching modes
+ */
+export function stopAllNotes() {
+  // Stop sampled kit
+  if (sampledDrumKit) {
+    sampledDrumKit.releaseAll();
+  }
+  
+  // Stop electronic kit (all voices)
+  if (electronicDrumKit) {
+    Object.values(electronicDrumKit).forEach(voice => {
+      if (voice && typeof voice.triggerRelease === 'function') {
+        voice.triggerRelease();
+      }
+    });
+  }
 }
 
 /**
@@ -274,8 +299,11 @@ export function triggerNote(name, time, velocity = 100) {
     return;
   }
 
-  // Convert velocity to gain (0-127 -> 0-1)
-  const velocityGain = velocity / 127;
+  // Enhanced velocity mapping for drums: use exponential curve for more dynamic response
+  // Drums respond well to velocity with a moderate curve (velocity^0.7)
+  // This makes soft hits quieter and hard hits louder in a more natural way
+  const normalizedVelocity = Math.max(0, Math.min(127, velocity)) / 127;
+  const velocityGain = Math.pow(normalizedVelocity, 0.7); // Moderate curve for drums (0.7)
 
   // Route to appropriate engine based on kit mode
   if (currentDrumKitMode === DRUM_KIT_MODE_SAMPLED) {

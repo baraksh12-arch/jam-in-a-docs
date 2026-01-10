@@ -20,12 +20,23 @@ let volume = 0.8;
 let SAMPLED_BASS_TRANSPOSE = 0;
 
 /**
- * Normalize velocity to 0-1 range
+ * Normalize velocity to 0-1 range with enhanced mapping
+ * Uses exponential curve for more natural bass response
  */
 function normalizeVelocity(velocity) {
   if (velocity == null) return 0.8;
-  if (velocity > 1) return Math.min(1, velocity / 127);
-  return Math.max(0, Math.min(1, velocity));
+  
+  // Convert to 0-1 range
+  let normalized;
+  if (velocity > 1) {
+    normalized = Math.min(1, velocity / 127);
+  } else {
+    normalized = Math.max(0, Math.min(1, velocity));
+  }
+  
+  // Apply exponential curve for more natural bass response (velocity^0.65)
+  // Bass benefits from a softer curve to make velocity changes more noticeable
+  return Math.pow(normalized, 0.65);
 }
 
 /**
@@ -40,6 +51,7 @@ function transposeNote(note, semitones) {
 
 /**
  * Initialize the bass instrument (both synth and sampled engines)
+ * Professional bass sound with sub-oscillator and filtering
  */
 export async function initBass() {
   if (isInitialized) {
@@ -47,29 +59,33 @@ export async function initBass() {
   }
 
   try {
-    // Create MonoSynth-based synth bass
+    // Create professional synth bass with sub-oscillator feel
+    // Inspired by classic P-Bass and synth bass tones
     synth = new Tone.MonoSynth({
       oscillator: {
-        type: "sawtooth",
+        type: "fatsawtooth",  // Fat sawtooth for rich harmonics
+        count: 3,             // 3 slightly detuned oscillators
+        spread: 20,           // Subtle detune spread
       },
       envelope: {
-        attack: 0.01,
-        decay: 0.3,
-        sustain: 0.4,
-        release: 0.5,
+        attack: 0.005,        // Fast attack for punchy bass
+        decay: 0.2,
+        sustain: 0.5,
+        release: 0.3,
       },
       filter: {
         type: "lowpass",
-        frequency: 800,
-        Q: 2,
+        frequency: 600,       // Lower cutoff for deep bass
+        Q: 3,                 // Resonance for character
+        rolloff: -24,         // Steeper rolloff
       },
       filterEnvelope: {
-        attack: 0.1,
-        decay: 0.2,
-        sustain: 0.3,
-        release: 0.4,
-        baseFrequency: 200,
-        octaves: 3,
+        attack: 0.01,
+        decay: 0.15,
+        sustain: 0.2,
+        release: 0.3,
+        baseFrequency: 150,   // Deep bass foundation
+        octaves: 2.5,         // Filter sweep range
       },
       volume: Tone.gainToDb(volume),
     }).toDestination();
@@ -82,8 +98,8 @@ export async function initBass() {
         D3: "bass_d.wav",
       },
       baseUrl: "/samples/bass/",
-      attack: 0.01,
-      release: 0.6,
+      attack: 0.005,
+      release: 0.4,
       curve: "linear",
       volume: Tone.gainToDb(volume),
       onload: () => {
@@ -92,13 +108,12 @@ export async function initBass() {
       },
       onerror: (error) => {
         console.warn("[Bass] Sample loading error (non-fatal):", error);
-        // Still mark as ready even if samples fail to load
         isInitialized = true;
       },
     }).toDestination();
 
     isInitialized = true;
-    console.log("[Bass] Initialized with Tone.MonoSynth and Tone.Sampler");
+    console.log("[Bass] Initialized with professional MonoSynth and Sampler");
   } catch (error) {
     console.error("[Bass] Failed to initialize:", error);
     throw error;
@@ -107,13 +122,32 @@ export async function initBass() {
 
 /**
  * Set the bass mode (synth or sampled)
+ * Stops all active notes before switching to prevent stuck notes
  */
 export function setBassMode(mode) {
   if (mode !== BASS_MODE_SYNTH && mode !== BASS_MODE_SAMPLED) {
     console.warn("[Bass] Invalid bass mode:", mode);
     return;
   }
+  
+  // Stop all active notes before switching
+  stopAllNotes();
+  
   currentBassMode = mode;
+  console.log(`[Bass] Bass mode switched to: ${mode}`);
+}
+
+/**
+ * Stop all active notes on both synth and sampled bass
+ * Prevents stuck notes when switching modes
+ */
+export function stopAllNotes() {
+  if (synth) {
+    synth.triggerRelease();
+  }
+  if (sampledBass) {
+    sampledBass.releaseAll();
+  }
 }
 
 /**
@@ -135,7 +169,8 @@ export function setSampledBassTranspose(semitones) {
 }
 
 /**
- * Play a bass note by note name or MIDI note number
+ * Play a bass note with sustain - note will hold until released
+ * Perfect for expressive bass playing like Jacob Collier
  */
 export function playBass(note, time, velocity) {
   if (!isInitialized || Tone.getContext().state !== "running") {
@@ -153,24 +188,58 @@ export function playBass(note, time, velocity) {
   if (currentBassMode === BASS_MODE_SAMPLED && sampledBass) {
     const finalNote = transposeNote(targetNote, SAMPLED_BASS_TRANSPOSE);
     if (time !== undefined && time !== null) {
-      sampledBass.triggerAttackRelease(finalNote, "8n", time, v);
+      sampledBass.triggerAttack(finalNote, time, v);
     } else {
-      sampledBass.triggerAttackRelease(finalNote, "8n", Tone.now(), v);
+      sampledBass.triggerAttack(finalNote, Tone.now(), v);
     }
   } else if (currentBassMode === BASS_MODE_SYNTH && synth) {
     if (time !== undefined && time !== null) {
-      synth.triggerAttackRelease(targetNote, "8n", time, v);
+      synth.triggerAttack(targetNote, time, v);
     } else {
-      synth.triggerAttackRelease(targetNote, "8n", Tone.now(), v);
+      synth.triggerAttack(targetNote, Tone.now(), v);
     }
   }
 }
 
 /**
- * Backwards-compatible API
+ * Release a bass note - natural sustain release
+ */
+export function releaseBass(note, time) {
+  if (!isInitialized) return;
+
+  let targetNote = note;
+  if (typeof note === "number") {
+    targetNote = Tone.Frequency(note, "midi").toNote();
+  }
+
+  if (currentBassMode === BASS_MODE_SAMPLED && sampledBass) {
+    const finalNote = transposeNote(targetNote, SAMPLED_BASS_TRANSPOSE);
+    if (time !== undefined && time !== null) {
+      sampledBass.triggerRelease(finalNote, time);
+    } else {
+      sampledBass.triggerRelease(finalNote, Tone.now());
+    }
+  } else if (currentBassMode === BASS_MODE_SYNTH && synth) {
+    if (time !== undefined && time !== null) {
+      synth.triggerRelease(time);
+    } else {
+      synth.triggerRelease(Tone.now());
+    }
+  }
+}
+
+/**
+ * Backwards-compatible API - trigger attack
  */
 export function triggerNote(note, time, velocity) {
   playBass(note, time, velocity);
+}
+
+/**
+ * Release note - backwards compatible
+ */
+export function releaseNote(note, time) {
+  releaseBass(note, time);
 }
 
 /**

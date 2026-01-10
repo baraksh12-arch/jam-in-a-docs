@@ -11,7 +11,7 @@ const KEY_MAP = {
   'w': 1, 'e': 3, 't': 6, 'y': 8, 'u': 10
 };
 
-export default function PianoKeyboard({ instrument, onNotePlay, disabled }) {
+export default function PianoKeyboard({ instrument, onNotePlay, disabled, disableKeyboard = false }) {
   const [activeNotes, setActiveNotes] = useState(new Set());
   const range = NOTE_RANGES[instrument];
   
@@ -39,10 +39,13 @@ export default function PianoKeyboard({ instrument, onNotePlay, disabled }) {
     });
   };
 
+  // Keyboard support - disabled when focus mode is active
   useEffect(() => {
-    if (disabled) return;
+    if (disabled || disableKeyboard) return;
 
     const handleKeyDown = (e) => {
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+      
       const offset = KEY_MAP[e.key.toLowerCase()];
       if (offset !== undefined) {
         const note = range.start + offset;
@@ -68,7 +71,7 @@ export default function PianoKeyboard({ instrument, onNotePlay, disabled }) {
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
     };
-  }, [disabled, activeNotes, range]);
+  }, [disabled, disableKeyboard, activeNotes, range]);
 
   const octaveCount = Math.ceil((range.end - range.start + 1) / 12);
   const displayOctaves = Math.min(octaveCount, 3);

@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS rooms (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- Players table
+-- Players table (includes both musicians and crowd members)
 CREATE TABLE IF NOT EXISTS players (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
@@ -24,6 +24,8 @@ CREATE TABLE IF NOT EXISTS players (
   display_name TEXT NOT NULL,
   color TEXT NOT NULL,
   instrument TEXT CHECK (instrument IN ('DRUMS', 'BASS', 'EP', 'GUITAR') OR instrument IS NULL),
+  is_player BOOLEAN NOT NULL DEFAULT true,  -- True for musicians, false for crowd
+  is_crowd BOOLEAN NOT NULL DEFAULT false,  -- True for crowd members (camera-only viewers)
   joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE(room_id, user_id)
@@ -54,6 +56,7 @@ CREATE TABLE IF NOT EXISTS chat_messages (
 -- Indexes for performance
 CREATE INDEX IF NOT EXISTS idx_players_room_id ON players(room_id);
 CREATE INDEX IF NOT EXISTS idx_players_user_id ON players(user_id);
+CREATE INDEX IF NOT EXISTS idx_players_room_id_is_crowd ON players(room_id, is_crowd) WHERE is_crowd = true;
 CREATE INDEX IF NOT EXISTS idx_note_events_room_id_created_at ON note_events(room_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_chat_messages_room_id_created_at ON chat_messages(room_id, created_at DESC);
 

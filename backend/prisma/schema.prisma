@@ -1,0 +1,250 @@
+// Prisma Schema for Jam in a Docs
+// Production-ready database schema for real-time collaborative music jamming
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================================
+// CORE MODELS
+// ============================================================================
+
+/// Room - A jam session where players collaborate
+model Room {
+  id            String   @id @default(cuid())
+  code          String   @unique @db.VarChar(8) // Short room code like "ABC123"
+  name          String?  @db.VarChar(100)
+  
+  // Musical settings
+  bpm           Int      @default(120)
+  musicalKey    String   @default("C") @db.VarChar(3) // C, C#, D, etc.
+  scale         String   @default("major") @db.VarChar(20) // major, minor, pentatonic, etc.
+  
+  // Playback state
+  isPlaying     Boolean  @default(false)
+  metronomeOn   Boolean  @default(false)
+  startTime     DateTime? // When playback started (for sync)
+  
+  // Room settings
+  maxPlayers    Int      @default(4)
+  maxCrowd      Int      @default(50)
+  isPublic      Boolean  @default(false)
+  
+  // Timestamps
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  lastActivity  DateTime @default(now())
+  
+  // Relations
+  players       Player[]
+  crowdMembers  CrowdMember[]
+  chatMessages  ChatMessage[]
+  noteEvents    NoteEvent[]
+  
+  @@index([code])
+  @@index([lastActivity])
+  @@index([isPublic])
+}
+
+/// Player - A musician in a room with an instrument
+model Player {
+  id            String      @id @default(cuid())
+  
+  // User identity (anonymous or authenticated)
+  userId        String      @db.VarChar(100) // UUID from frontend
+  displayName   String      @db.VarChar(50)
+  color         String      @db.VarChar(7) // Hex color like #FF5733
+  
+  // Instrument assignment
+  instrument    Instrument?
+  
+  // Connection state
+  isConnected   Boolean     @default(true)
+  lastPing      DateTime    @default(now())
+  
+  // WebRTC signaling
+  peerId        String?     @db.VarChar(100)
+  
+  // Timestamps
+  joinedAt      DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+  
+  // Relations
+  room          Room        @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  roomId        String
+  
+  chatMessages  ChatMessage[]
+  noteEvents    NoteEvent[]
+  
+  @@unique([roomId, userId])
+  @@unique([roomId, instrument])
+  @@index([roomId])
+  @@index([userId])
+  @@index([isConnected])
+}
+
+/// CrowdMember - A viewer watching a jam session
+model CrowdMember {
+  id            String   @id @default(cuid())
+  
+  // User identity
+  userId        String   @db.VarChar(100)
+  displayName   String   @db.VarChar(50)
+  color         String   @db.VarChar(7)
+  
+  // Connection state
+  isConnected   Boolean  @default(true)
+  lastPing      DateTime @default(now())
+  
+  // Video streaming
+  isBroadcasting Boolean @default(false)
+  peerId        String?  @db.VarChar(100)
+  
+  // Timestamps
+  joinedAt      DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  
+  // Relations
+  room          Room     @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  roomId        String
+  
+  chatMessages  ChatMessage[]
+  
+  @@unique([roomId, userId])
+  @@index([roomId])
+  @@index([isConnected])
+}
+
+/// ChatMessage - Messages in room chat
+model ChatMessage {
+  id          String   @id @default(cuid())
+  content     String   @db.VarChar(500)
+  
+  // Message type
+  type        MessageType @default(TEXT)
+  
+  // Timestamps
+  createdAt   DateTime @default(now())
+  
+  // Relations
+  room        Room     @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  roomId      String
+  
+  // Author (either player or crowd member)
+  player      Player?      @relation(fields: [playerId], references: [id], onDelete: SetNull)
+  playerId    String?
+  
+  crowdMember CrowdMember? @relation(fields: [crowdMemberId], references: [id], onDelete: SetNull)
+  crowdMemberId String?
+  
+  // Denormalized author info (in case user leaves)
+  authorName  String   @db.VarChar(50)
+  authorColor String   @db.VarChar(7)
+  
+  @@index([roomId, createdAt])
+}
+
+/// NoteEvent - Musical note events for playback sync
+model NoteEvent {
+  id          String   @id @default(cuid())
+  
+  // Note data
+  instrument  Instrument
+  note        String   @db.VarChar(20) // MIDI note or drum pad ID
+  velocity    Int      @default(100)
+  eventType   NoteEventType @default(NOTE_ON)
+  
+  // Timing
+  timestamp   DateTime @default(now())
+  scheduledAt BigInt?  // Precise audio scheduling time in ms
+  
+  // Relations
+  room        Room     @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  roomId      String
+  
+  player      Player   @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  playerId    String
+  
+  @@index([roomId, timestamp])
+  @@index([playerId])
+}
+
+// ============================================================================
+// ENUMS
+// ============================================================================
+
+enum Instrument {
+  DRUMS
+  BASS
+  EP
+  GUITAR
+}
+
+enum MessageType {
+  TEXT
+  SYSTEM
+  EMOJI
+}
+
+enum NoteEventType {
+  NOTE_ON
+  NOTE_OFF
+}
+
+// ============================================================================
+// OPTIONAL: User Authentication (for persistent profiles)
+// ============================================================================
+
+model User {
+  id            String   @id @default(cuid())
+  email         String?  @unique @db.VarChar(255)
+  passwordHash  String?  @db.VarChar(255)
+  
+  // Profile
+  displayName   String   @db.VarChar(50)
+  avatarUrl     String?  @db.VarChar(500)
+  
+  // Preferences
+  preferredColor String  @default("#8B5CF6") @db.VarChar(7)
+  
+  // Stats
+  totalJams     Int      @default(0)
+  totalNotes    Int      @default(0)
+  
+  // Timestamps
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  lastLogin     DateTime?
+  
+  @@index([email])
+}
+
+// ============================================================================
+// ANALYTICS (Optional)
+// ============================================================================
+
+model RoomAnalytics {
+  id              String   @id @default(cuid())
+  roomCode        String   @db.VarChar(8)
+  
+  // Metrics
+  totalPlayers    Int      @default(0)
+  totalCrowd      Int      @default(0)
+  totalMessages   Int      @default(0)
+  totalNotes      Int      @default(0)
+  peakPlayers     Int      @default(0)
+  peakCrowd       Int      @default(0)
+  
+  // Duration
+  startTime       DateTime @default(now())
+  endTime         DateTime?
+  durationMinutes Int?
+  
+  @@index([roomCode])
+  @@index([startTime])
+}

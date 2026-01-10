@@ -1,21 +1,33 @@
 import { supabase } from '@/api/supabaseClient';
+import { validateRoomCode, validateDisplayName, validateChatMessage, sanitizeText } from '@/lib/validation';
+import { chatMessageLimiter, roomOperationLimiter } from '@/lib/rateLimiter';
+import { info, error as logError, warn, userAction } from '@/lib/logger';
 
 /**
  * Room Operations
  * Fixed: Returns room object with id field for consistent navigation
  */
 export async function createRoom(roomId) {
-  if (!roomId || typeof roomId !== 'string' || roomId.length === 0) {
-    throw new Error('Invalid room ID');
+  // Rate limiting
+  if (!roomOperationLimiter.isAllowed()) {
+    const waitTime = roomOperationLimiter.getTimeUntilNext();
+    throw new Error(`Rate limit exceeded. Please wait ${Math.ceil(waitTime / 1000)} seconds.`);
   }
 
+  // Validate room code
+  const validation = validateRoomCode(roomId);
+  if (!validation.valid) {
+    throw new Error(validation.error || 'Invalid room ID');
+  }
+  const validatedRoomId = validation.value;
+
   try {
-    console.log('[createRoom] Creating room with id:', roomId);
+    info('[createRoom] Creating room', { roomId: validatedRoomId });
     
     const { data, error } = await supabase
       .from('rooms')
       .insert({
-        id: roomId,
+        id: validatedRoomId,
         bpm: 120,
         key: 'C',
         scale: 'major',
@@ -26,43 +38,54 @@ export async function createRoom(roomId) {
       .single();
 
     if (error) {
-      console.error('[createRoom] Error inserting room:', { roomId, error });
+      logError('[createRoom] Error inserting room', { roomId: validatedRoomId, error: error.message });
       throw error;
     }
 
     if (!data || !data.id) {
+      logError('[createRoom] Room created but no data returned', { roomId: validatedRoomId });
       throw new Error('Room created but no data returned');
     }
 
-    console.log('[createRoom] Successfully created room:', data.id);
+    info('[createRoom] Successfully created room', { roomId: data.id });
+    userAction('room_created', { roomId: data.id });
+    
     // Return the room data directly for easier access to .id
     return data;
   } catch (error) {
-    console.error('[createRoom] Failed to create room:', { roomId, error });
+    logError('[createRoom] Failed to create room', { roomId: validatedRoomId, error: error.message });
     throw new Error(error.message || 'Failed to create room');
   }
 }
 
 export async function getRoom(roomId) {
   if (!roomId) {
-    console.warn('[getRoom] No roomId provided');
+    warn('[getRoom] No roomId provided');
     return null;
   }
+
+  // Validate room code format before querying
+  const validation = validateRoomCode(roomId);
+  if (!validation.valid) {
+    warn('[getRoom] Invalid room code format', { roomId });
+    return null;
+  }
+  const validatedRoomId = validation.value;
 
   try {
     const { data, error } = await supabase
       .from('rooms')
       .select('*')
-      .eq('id', roomId)
+      .eq('id', validatedRoomId)
       .maybeSingle(); // Use maybeSingle() instead of single() for cleaner null handling
 
     if (error) {
-      console.error('[getRoom] Error fetching room:', { roomId, error });
+      logError('[getRoom] Error fetching room', { roomId: validatedRoomId, error: error.message });
       throw error;
     }
 
     if (!data) {
-      console.warn('[getRoom] No room found for id:', roomId);
+      warn('[getRoom] No room found', { roomId: validatedRoomId });
       return null;
     }
 
@@ -80,7 +103,7 @@ export async function getRoom(roomId) {
       updated_at: data.updated_at
     };
   } catch (error) {
-    console.error('[getRoom] Error getting room:', { roomId, error });
+    logError('[getRoom] Error getting room', { roomId: validatedRoomId, error: error.message });
     throw new Error(error.message || 'Failed to get room');
   }
 }
@@ -97,11 +120,17 @@ export async function updateRoom(roomId, data) {
     const { data: updatedRoom, error } = await supabase
       .from('rooms')
       .update(updateData)
-      .eq('id', roomId)
+      .eq('id', roomId.toUpperCase()) // Ensure case-insensitive match
       .select()
-      .single();
+      .maybeSingle(); // Use maybeSingle() to handle 0 rows gracefully
 
     if (error) throw error;
+    
+    if (!updatedRoom) {
+      console.warn('[updateRoom] Room not found:', roomId);
+      return { data: null };
+    }
+    
     return { data: updatedRoom };
   } catch (error) {
     console.error('Error updating room:', error);
@@ -113,28 +142,45 @@ export async function updateRoom(roomId, data) {
  * Player Operations
  */
 export async function joinRoomAsPlayer(roomId, userId, displayName, color) {
+  // Rate limiting
+  if (!roomOperationLimiter.isAllowed()) {
+    const waitTime = roomOperationLimiter.getTimeUntilNext();
+    throw new Error(`Rate limit exceeded. Please wait ${Math.ceil(waitTime / 1000)} seconds.`);
+  }
+
+  // Validate inputs
   if (!roomId || !userId) {
     throw new Error('Room ID and User ID are required');
   }
-  if (!displayName || displayName.trim().length === 0) {
-    throw new Error('Display name is required');
+
+  const roomValidation = validateRoomCode(roomId);
+  if (!roomValidation.valid) {
+    throw new Error(roomValidation.error || 'Invalid room code');
   }
+  const validatedRoomId = roomValidation.value;
+
+  const nameValidation = validateDisplayName(displayName);
+  if (!nameValidation.valid) {
+    throw new Error(nameValidation.error || 'Invalid display name');
+  }
+  const sanitizedDisplayName = nameValidation.sanitized || displayName;
+
   if (!color || !/^#[0-9A-F]{6}$/i.test(color)) {
     throw new Error('Valid color hex code is required');
   }
 
   try {
     // First, ensure room exists
-    const room = await getRoom(roomId);
+    const room = await getRoom(validatedRoomId);
     if (!room) {
-      await createRoom(roomId);
+      await createRoom(validatedRoomId);
     }
 
     // Check if player already exists (use maybeSingle to handle no rows gracefully)
     const { data: existingPlayer, error: queryError } = await supabase
       .from('players')
       .select('*')
-      .eq('room_id', roomId)
+      .eq('room_id', validatedRoomId)
       .eq('user_id', userId)
       .maybeSingle();
 
@@ -146,12 +192,12 @@ export async function joinRoomAsPlayer(roomId, userId, displayName, color) {
 
     if (existingPlayer) {
       // Player row found - update it
-      console.log(`[joinRoomAsPlayer] Player row found for user ${userId} in room ${roomId}`);
+      console.log(`[joinRoomAsPlayer] Player row found for user ${userId} in room ${validatedRoomId}`);
       
       const { data, error } = await supabase
         .from('players')
         .update({
-          display_name: displayName,
+          display_name: sanitizedDisplayName,
           color: color,
           is_player: true, // Ensure is_player is set
           updated_at: new Date().toISOString()
@@ -168,14 +214,14 @@ export async function joinRoomAsPlayer(roomId, userId, displayName, color) {
     }
 
     // No player row found - create new one
-    console.log(`[joinRoomAsPlayer] Creating new player row for user ${userId} in room ${roomId}`);
+    console.log(`[joinRoomAsPlayer] Creating new player row for user ${userId} in room ${validatedRoomId}`);
     
     const { data, error } = await supabase
       .from('players')
       .insert({
-        room_id: roomId,
+        room_id: validatedRoomId,
         user_id: userId,
-        display_name: displayName,
+        display_name: sanitizedDisplayName,
         color: color,
         is_player: true, // Explicitly set as player (not listener)
         instrument: null // Will be claimed later
@@ -188,57 +234,122 @@ export async function joinRoomAsPlayer(roomId, userId, displayName, color) {
       throw error;
     }
     
-    console.log(`[joinRoomAsPlayer] Successfully created player row for user ${userId}`);
+    info('[joinRoomAsPlayer] Successfully created player row', { userId, roomId: validatedRoomId });
+    userAction('player_joined', { userId, roomId: validatedRoomId });
     return { data };
   } catch (error) {
-    console.error('Error joining room as player:', error);
+    logError('[joinRoomAsPlayer] Error joining room as player', { userId, roomId: validatedRoomId, error: error.message });
     throw new Error(error.message || 'Failed to join room');
   }
 }
 
 export async function claimInstrument(roomId, userId, instrument) {
+  // Rate limiting
+  if (!roomOperationLimiter.isAllowed()) {
+    const waitTime = roomOperationLimiter.getTimeUntilNext();
+    throw new Error(`Rate limit exceeded. Please wait ${Math.ceil(waitTime / 1000)} seconds.`);
+  }
+
+  // Validate inputs
   if (!roomId || !userId || !instrument) {
     throw new Error('Room ID, User ID, and Instrument are required');
   }
 
-  console.log(`[claimInstrument] Claiming ${instrument} for user ${userId} in room ${roomId}`);
+  const roomValidation = validateRoomCode(roomId);
+  if (!roomValidation.valid) {
+    throw new Error(roomValidation.error || 'Invalid room code');
+  }
+  const validatedRoomId = roomValidation.value;
+
+  if (!['DRUMS', 'BASS', 'EP', 'GUITAR'].includes(instrument)) {
+    throw new Error('Invalid instrument');
+  }
+
+  info('[claimInstrument] Claiming instrument', { userId, roomId: validatedRoomId, instrument });
   
   try {
+    // First, check if player exists and get current instrument
+    const { data: existingPlayer, error: checkError } = await supabase
+      .from('players')
+      .select('id, instrument')
+      .eq('room_id', validatedRoomId)
+      .eq('user_id', userId)
+      .single();
+
+    if (checkError || !existingPlayer) {
+      logError('[claimInstrument] Player not found', { userId, roomId: validatedRoomId, instrument, error: checkError?.message });
+      throw new Error('You must join the room as a player before claiming an instrument. Please refresh the page.');
+    }
+
+    // Check if user already has a different instrument
+    if (existingPlayer.instrument && existingPlayer.instrument !== instrument) {
+      logError('[claimInstrument] User already has instrument', { userId, roomId: validatedRoomId, currentInstrument: existingPlayer.instrument, requestedInstrument: instrument });
+      throw new Error(`You already have ${existingPlayer.instrument}. Release it first to claim a different instrument.`);
+    }
+
+    // Check if instrument is already claimed by another player
+    const { data: instrumentOwner, error: ownerError } = await supabase
+      .from('players')
+      .select('user_id, instrument')
+      .eq('room_id', validatedRoomId)
+      .eq('instrument', instrument)
+      .single();
+
+    if (ownerError && ownerError.code !== 'PGRST116') { // PGRST116 = no rows returned
+      logError('[claimInstrument] Error checking instrument owner', { userId, roomId: validatedRoomId, instrument, error: ownerError?.message });
+    }
+
+    if (instrumentOwner && instrumentOwner.user_id !== userId) {
+      logError('[claimInstrument] Instrument already claimed', { userId, roomId: validatedRoomId, instrument, owner: instrumentOwner.user_id });
+      throw new Error('This instrument is already claimed by another player.');
+    }
+
+    // Now update the instrument
     const { data, error } = await supabase
       .from('players')
       .update({
         instrument: instrument,
         updated_at: new Date().toISOString()
       })
-      .eq('room_id', roomId)
+      .eq('room_id', validatedRoomId)
       .eq('user_id', userId)
       .select()
       .single();
 
     if (error) {
-      console.error(`[claimInstrument] Error claiming ${instrument} for user ${userId}:`, error);
+      logError('[claimInstrument] Error claiming instrument', { userId, roomId: validatedRoomId, instrument, error: error.message });
       throw error;
     }
+
+    if (!data) {
+      logError('[claimInstrument] No data returned after update', { userId, roomId: validatedRoomId, instrument });
+      throw new Error('Failed to claim instrument: no data returned');
+    }
     
-    console.log(`[claimInstrument] Successfully updated instrument to ${instrument} for user ${userId}`);
+    info('[claimInstrument] Successfully claimed instrument', { userId, roomId: validatedRoomId, instrument });
+    userAction('instrument_claimed', { userId, roomId: validatedRoomId, instrument });
+    
     // Note: Supabase Realtime subscription will automatically update useRoomState
     // No need to manually refresh - the subscription in subscribeToPlayers will fire
     return { data };
   } catch (error) {
-    console.error(`[claimInstrument] Error claiming instrument ${instrument}:`, error);
+    logError('[claimInstrument] Error claiming instrument', { userId, roomId: validatedRoomId, instrument, error: error.message });
     throw new Error(error.message || 'Failed to claim instrument');
   }
 }
 
 export async function releaseInstrument(roomId, userId) {
   try {
+    // Normalize room ID to uppercase
+    const normalizedRoomId = roomId?.toUpperCase();
+    
     const { data, error } = await supabase
       .from('players')
       .update({
         instrument: null,
         updated_at: new Date().toISOString()
       })
-      .eq('room_id', roomId)
+      .eq('room_id', normalizedRoomId)
       .eq('user_id', userId)
       .select()
       .single();
@@ -253,10 +364,13 @@ export async function releaseInstrument(roomId, userId) {
 
 export async function getPlayers(roomId) {
   try {
+    // Normalize room ID to uppercase to match how it's stored
+    const normalizedRoomId = roomId?.toUpperCase();
+    
     const { data, error } = await supabase
       .from('players')
       .select('*')
-      .eq('room_id', roomId)
+      .eq('room_id', normalizedRoomId)
       .order('joined_at', { ascending: true });
 
     if (error) throw error;
@@ -357,24 +471,43 @@ export async function getNoteEvents(roomId, since = null) {
  * Chat Message Operations
  */
 export async function sendChatMessage(roomId, userId, displayName, text) {
+  // Rate limiting
+  if (!chatMessageLimiter.isAllowed()) {
+    const waitTime = chatMessageLimiter.getTimeUntilNext();
+    throw new Error(`Rate limit exceeded. Please wait ${Math.ceil(waitTime / 1000)} seconds before sending another message.`);
+  }
+
+  // Validate inputs
   if (!roomId || !userId) {
     throw new Error('Room ID and User ID are required');
   }
-  if (!text || text.trim().length === 0) {
-    throw new Error('Message text cannot be empty');
+
+  const roomValidation = validateRoomCode(roomId);
+  if (!roomValidation.valid) {
+    throw new Error(roomValidation.error || 'Invalid room code');
   }
-  if (text.length > 500) {
-    throw new Error('Message text is too long (max 500 characters)');
+  const validatedRoomId = roomValidation.value;
+
+  const nameValidation = validateDisplayName(displayName);
+  if (!nameValidation.valid) {
+    throw new Error(nameValidation.error || 'Invalid display name');
   }
+  const sanitizedDisplayName = nameValidation.sanitized || displayName;
+
+  const messageValidation = validateChatMessage(text);
+  if (!messageValidation.valid) {
+    throw new Error(messageValidation.error || 'Invalid message');
+  }
+  const sanitizedText = messageValidation.sanitized || text;
 
   try {
     const { data, error } = await supabase
       .from('chat_messages')
       .insert({
-        room_id: roomId,
+        room_id: validatedRoomId,
         user_id: userId,
-        display_name: displayName,
-        text: text
+        display_name: sanitizedDisplayName,
+        text: sanitizedText // XSS-protected text
       })
       .select()
       .single();
@@ -426,17 +559,51 @@ export function subscribeToRoom(roomId, callback) {
     return () => {};
   }
 
+  let lastRoomHash = '';
+  let isSubscribed = false;
+
+  // Function to fetch room and update if changed
+  const fetchAndUpdate = async (force = false) => {
+    try {
+      const room = await getRoom(roomId);
+      if (room) {
+        const newHash = JSON.stringify({
+          bpm: room.bpm,
+          key: room.key,
+          scale: room.scale,
+          isPlaying: room.isPlaying,
+          metronomeOn: room.metronomeOn
+        });
+        
+        if (force || newHash !== lastRoomHash) {
+          lastRoomHash = newHash;
+          console.log(`[subscribeToRoom] Room state updated:`, room.bpm, room.key, room.scale, room.isPlaying ? 'PLAYING' : 'STOPPED');
+          callback(room);
+        }
+      } else {
+        callback(null);
+      }
+    } catch (error) {
+      console.error('[subscribeToRoom] Error fetching room:', error);
+    }
+  };
+
   // Initial fetch with retry logic to handle race conditions
-  // Increased retries and delay to handle Supabase replication delays
   const fetchWithRetry = async (retries = 5, delay = 300) => {
     for (let i = 0; i < retries; i++) {
       try {
         const room = await getRoom(roomId);
         if (room) {
+          lastRoomHash = JSON.stringify({
+            bpm: room.bpm,
+            key: room.key,
+            scale: room.scale,
+            isPlaying: room.isPlaying,
+            metronomeOn: room.metronomeOn
+          });
           callback(room);
           return;
         }
-        // If room not found and we have retries left, wait and try again
         if (i < retries - 1) {
           console.log(`[subscribeToRoom] Room not found, retrying... (${i + 1}/${retries})`);
           await new Promise(resolve => setTimeout(resolve, delay));
@@ -444,42 +611,57 @@ export function subscribeToRoom(roomId, callback) {
       } catch (error) {
         console.error('[subscribeToRoom] Error fetching room:', error);
         if (i === retries - 1) {
-          // Last retry failed, call callback with null
           callback(null);
         } else {
           await new Promise(resolve => setTimeout(resolve, delay));
         }
       }
     }
-    // All retries exhausted, room not found
     callback(null);
   };
 
   fetchWithRetry();
 
-  // Subscribe to changes
+  // Subscribe to changes with improved reliability
+  const channelName = `room-realtime-${roomId}-${Date.now()}`;
   const channel = supabase
-    .channel(`room:${roomId}`)
+    .channel(channelName)
     .on(
       'postgres_changes',
       {
-        event: '*',
+        event: 'UPDATE',
         schema: 'public',
         table: 'rooms',
         filter: `id=eq.${roomId}`
       },
       async (payload) => {
-        try {
-          const room = await getRoom(roomId);
-          callback(room);
-        } catch (error) {
-          console.error('Error handling room update:', error);
-        }
+        console.log(`[subscribeToRoom] Realtime UPDATE:`, payload.new);
+        await fetchAndUpdate(true);
       }
     )
-    .subscribe();
+    .subscribe((status, error) => {
+      if (status === 'SUBSCRIBED') {
+        console.log(`[subscribeToRoom] ✅ Realtime subscription active for room ${roomId}`);
+        isSubscribed = true;
+      } else if (status === 'CHANNEL_ERROR') {
+        console.error(`[subscribeToRoom] ❌ Realtime channel error:`, error);
+        isSubscribed = false;
+      } else {
+        console.log(`[subscribeToRoom] Subscription status: ${status}`);
+      }
+    });
+
+  // Polling fallback - more frequent when realtime not connected
+  const pollInterval = setInterval(() => {
+    if (!isSubscribed) {
+      console.log('[subscribeToRoom] Polling fallback active');
+    }
+    fetchAndUpdate();
+  }, isSubscribed ? 5000 : 2000);
 
   return () => {
+    console.log(`[subscribeToRoom] Unsubscribing from room ${roomId}`);
+    clearInterval(pollInterval);
     supabase.removeChannel(channel);
   };
 }
@@ -491,51 +673,115 @@ export function subscribeToPlayers(roomId, callback) {
   }
 
   console.log(`[subscribeToPlayers] Setting up subscription for room ${roomId}`);
+  
+  // Track last known state for comparison
+  let lastPlayersHash = '';
+  let isSubscribed = false;
+  let retryCount = 0;
+  const maxRetries = 3;
+  
+  // Function to fetch and update players
+  const fetchAndUpdate = async (force = false) => {
+    try {
+      const players = await getPlayers(roomId);
+      // Create a hash of the players state to detect actual changes
+      const newHash = JSON.stringify(players.map(p => ({ 
+        id: p.id, 
+        instrument: p.instrument,
+        displayName: p.displayName || p.display_name 
+      })));
+      
+      if (force || newHash !== lastPlayersHash) {
+        lastPlayersHash = newHash;
+        console.log(`[subscribeToPlayers] Players updated:`, players.length, 'players', 
+          players.map(p => `${p.display_name || p.displayName}: ${p.instrument || 'none'}`).join(', '));
+        callback(players);
+      }
+    } catch (error) {
+      console.error('[subscribeToPlayers] Error fetching players:', error);
+      // Retry logic
+      if (retryCount < maxRetries) {
+        retryCount++;
+        setTimeout(() => fetchAndUpdate(true), 1000 * retryCount);
+      }
+    }
+  };
 
-  // Initial fetch
-  getPlayers(roomId)
-    .then(players => {
-      console.log(`[subscribeToPlayers] Initial players fetch:`, players.length, 'players');
-      callback(players);
-    })
-    .catch(error => {
-      console.error('[subscribeToPlayers] Error in initial fetch:', error);
-      callback([]); // Call with empty array on error
-    });
+  // Initial fetch - force update
+  fetchAndUpdate(true);
 
-  // Subscribe to changes
+  // Subscribe to changes via Supabase Realtime with improved error handling
+  const channelName = `players-realtime-${roomId}-${Date.now()}`;
   const channel = supabase
-    .channel(`players:${roomId}`)
+    .channel(channelName)
     .on(
       'postgres_changes',
       {
-        event: '*', // Listen to INSERT, UPDATE, DELETE
+        event: 'INSERT',
         schema: 'public',
         table: 'players',
         filter: `room_id=eq.${roomId}`
       },
       async (payload) => {
-        console.log(`[subscribeToPlayers] Players table changed:`, payload.eventType, payload.new || payload.old);
-        try {
-          // Refetch all players to get the latest state
-          const players = await getPlayers(roomId);
-          console.log(`[subscribeToPlayers] Updated players list:`, players.length, 'players');
-          callback(players);
-        } catch (error) {
-          console.error('[subscribeToPlayers] Error handling players update:', error);
-        }
+        console.log(`[subscribeToPlayers] Realtime INSERT:`, payload.new);
+        await fetchAndUpdate(true); // Force update on INSERT
       }
     )
-    .subscribe((status) => {
+    .on(
+      'postgres_changes',
+      {
+        event: 'UPDATE',
+        schema: 'public',
+        table: 'players',
+        filter: `room_id=eq.${roomId}`
+      },
+      async (payload) => {
+        console.log(`[subscribeToPlayers] Realtime UPDATE:`, payload.new);
+        await fetchAndUpdate(true); // Force update on UPDATE
+      }
+    )
+    .on(
+      'postgres_changes',
+      {
+        event: 'DELETE',
+        schema: 'public',
+        table: 'players',
+        filter: `room_id=eq.${roomId}`
+      },
+      async (payload) => {
+        console.log(`[subscribeToPlayers] Realtime DELETE:`, payload.old);
+        await fetchAndUpdate(true); // Force update on DELETE
+      }
+    )
+    .subscribe((status, error) => {
       if (status === 'SUBSCRIBED') {
-        console.log(`[subscribeToPlayers] Successfully subscribed to players for room ${roomId}`);
+        console.log(`[subscribeToPlayers] ✅ Realtime subscription active for room ${roomId}`);
+        isSubscribed = true;
+        retryCount = 0;
       } else if (status === 'CHANNEL_ERROR') {
-        console.error(`[subscribeToPlayers] Channel error for room ${roomId}`);
+        console.error(`[subscribeToPlayers] ❌ Realtime channel error:`, error);
+        isSubscribed = false;
+      } else if (status === 'TIMED_OUT') {
+        console.warn(`[subscribeToPlayers] ⏰ Realtime channel timed out, will retry`);
+        isSubscribed = false;
+      } else {
+        console.log(`[subscribeToPlayers] Subscription status: ${status}`);
       }
     });
 
+  // More aggressive polling when not subscribed - every 1.5 seconds
+  // When subscribed, poll every 5 seconds as a backup
+  const pollInterval = setInterval(() => {
+    const pollDelay = isSubscribed ? 5000 : 1500;
+    if (!isSubscribed) {
+      console.log('[subscribeToPlayers] Polling fallback active (realtime not connected)');
+    }
+    fetchAndUpdate();
+  }, 1500);
+
   return () => {
     console.log(`[subscribeToPlayers] Unsubscribing from players for room ${roomId}`);
+    clearInterval(pollInterval);
     supabase.removeChannel(channel);
   };
 }
@@ -608,4 +854,197 @@ export function subscribeToNoteEvents(roomId, callback) {
   return () => {
     supabase.removeChannel(channel);
   };
+}
+
+/**
+ * Crowd Member Operations
+ * Crowd members can view/listen but only broadcast their camera (no audio, no instrument control)
+ */
+export async function joinRoomAsCrowd(roomId, userId, displayName, color) {
+  // Rate limiting
+  if (!roomOperationLimiter.isAllowed()) {
+    const waitTime = roomOperationLimiter.getTimeUntilNext();
+    throw new Error(`Rate limit exceeded. Please wait ${Math.ceil(waitTime / 1000)} seconds.`);
+  }
+
+  // Validate inputs
+  if (!roomId || !userId) {
+    throw new Error('Room ID and User ID are required');
+  }
+
+  const roomValidation = validateRoomCode(roomId);
+  if (!roomValidation.valid) {
+    throw new Error(roomValidation.error || 'Invalid room code');
+  }
+  const validatedRoomId = roomValidation.value;
+
+  const nameValidation = validateDisplayName(displayName);
+  if (!nameValidation.valid) {
+    throw new Error(nameValidation.error || 'Invalid display name');
+  }
+  const sanitizedDisplayName = nameValidation.sanitized || displayName;
+
+  if (!color || !/^#[0-9A-F]{6}$/i.test(color)) {
+    throw new Error('Valid color hex code is required');
+  }
+
+  try {
+    // First, ensure room exists
+    const room = await getRoom(validatedRoomId);
+    if (!room) {
+      throw new Error('Room does not exist. Cannot join as crowd.');
+    }
+
+    // Check if already in players table
+    const { data: existingPlayer, error: queryError } = await supabase
+      .from('players')
+      .select('*')
+      .eq('room_id', validatedRoomId)
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (queryError && queryError.code !== 'PGRST116') {
+      console.error('Error querying for existing player:', queryError);
+      throw queryError;
+    }
+
+    if (existingPlayer) {
+      // Update existing record to be crowd member
+      const { data, error } = await supabase
+        .from('players')
+        .update({
+          display_name: sanitizedDisplayName,
+          color: color,
+          is_player: false, // Mark as crowd member (not a player)
+          instrument: null,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', existingPlayer.id)
+        .select()
+        .single();
+
+      if (error) throw error;
+      info('[joinRoomAsCrowd] Updated existing player to crowd', { userId, roomId: validatedRoomId });
+      userAction('crowd_joined', { userId, roomId: validatedRoomId });
+      return { data };
+    }
+
+    // Create new crowd member
+    const { data, error } = await supabase
+      .from('players')
+      .insert({
+        room_id: validatedRoomId,
+        user_id: userId,
+        display_name: sanitizedDisplayName,
+        color: color,
+        is_player: false, // Not a player (crowd member)
+        instrument: null
+      })
+      .select()
+      .single();
+
+    if (error) throw error;
+    info('[joinRoomAsCrowd] Successfully created crowd member', { userId, roomId: validatedRoomId });
+    userAction('crowd_joined', { userId, roomId: validatedRoomId });
+    return { data };
+  } catch (error) {
+    logError('[joinRoomAsCrowd] Error joining as crowd', { userId, roomId: validatedRoomId, error: error.message });
+    throw new Error(error.message || 'Failed to join as crowd');
+  }
+}
+
+export async function getCrowdMembers(roomId) {
+  try {
+    // Normalize room ID to uppercase
+    const normalizedRoomId = roomId?.toUpperCase();
+    
+    // Query for crowd members (is_player = false)
+    // Note: is_crowd column doesn't exist in schema, so we use is_player = false
+    const { data, error } = await supabase
+      .from('players')
+      .select('*')
+      .eq('room_id', normalizedRoomId)
+      .eq('is_player', false)
+      .order('joined_at', { ascending: true });
+
+    if (error) throw error;
+
+    // Transform to match expected format
+    return (data || []).map(member => ({
+      id: member.user_id || member.id,
+      userId: member.user_id,
+      displayName: member.display_name,
+      color: member.color,
+      isCrowd: true,
+      joinedAt: member.joined_at
+    }));
+  } catch (error) {
+    console.error('Error getting crowd members:', error);
+    throw new Error(error.message || 'Failed to get crowd members');
+  }
+}
+
+export function subscribeToCrowdMembers(roomId, callback) {
+  if (!roomId) {
+    console.warn('[subscribeToCrowdMembers] No roomId provided');
+    return () => {};
+  }
+
+  // Initial fetch
+  getCrowdMembers(roomId)
+    .then(members => {
+      callback(members);
+    })
+    .catch(error => {
+      console.error('[subscribeToCrowdMembers] Error in initial fetch:', error);
+      callback([]);
+    });
+
+  // Subscribe to changes
+  const channel = supabase
+    .channel(`crowd:${roomId}`)
+    .on(
+      'postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'players',
+        filter: `room_id=eq.${roomId}`
+      },
+      async (payload) => {
+        try {
+          // Refetch all crowd members to get the latest state
+          const members = await getCrowdMembers(roomId);
+          callback(members);
+        } catch (error) {
+          console.error('[subscribeToCrowdMembers] Error handling crowd update:', error);
+        }
+      }
+    )
+    .subscribe();
+
+  return () => {
+    supabase.removeChannel(channel);
+  };
+}
+
+export async function leaveCrowd(roomId, userId) {
+  try {
+    // Normalize room ID to uppercase
+    const normalizedRoomId = roomId?.toUpperCase();
+    
+    const { error } = await supabase
+      .from('players')
+      .delete()
+      .eq('room_id', normalizedRoomId)
+      .eq('user_id', userId)
+      .eq('is_player', false); // Crowd members have is_player = false
+
+    if (error) throw error;
+    info('[leaveCrowd] Crowd member left', { userId, roomId: normalizedRoomId });
+    return { success: true };
+  } catch (error) {
+    console.error('Error leaving crowd:', error);
+    throw new Error(error.message || 'Failed to leave crowd');
+  }
 }

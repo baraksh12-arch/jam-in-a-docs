@@ -41,18 +41,22 @@ export default function InstrumentSlot({
   const isMyInstrument = player?.id === currentUserId;
 
   return (
-    <Card className={`
-      border-2 transition-all duration-300
-      ${isMyInstrument 
-        ? 'border-purple-400 bg-gradient-to-br ' + config.color + ' shadow-lg shadow-purple-500/50' 
-        : player 
-          ? 'border-white/20 bg-white/5' 
-          : 'border-white/10 bg-white/5 hover:border-white/30 hover:bg-white/10 cursor-pointer'
-      }
-    `}>
+    <Card 
+      className={`
+        border-2 transition-all duration-300
+        ${isMyInstrument 
+          ? 'border-purple-400 bg-gradient-to-br ' + config.color + ' shadow-lg shadow-purple-500/50' 
+          : player 
+            ? 'border-white/20 bg-white/5' 
+            : 'border-white/10 bg-white/5 hover:border-white/30 hover:bg-white/10 cursor-pointer'
+        }
+      `}
+      role="article"
+      aria-label={`${config.name} instrument slot${player ? `, claimed by ${player.displayName}` : ', available'}`}
+    >
       <CardContent className="p-6 text-center">
         {/* Instrument icon/emoji */}
-        <div className="text-6xl mb-4">{config.icon}</div>
+        <div className="text-6xl mb-4" aria-hidden="true">{config.icon}</div>
         
         {/* Instrument name */}
         <h3 className={`text-xl font-bold mb-2 ${isMyInstrument ? 'text-white' : 'text-gray-200'}`}>
@@ -81,8 +85,9 @@ export default function InstrumentSlot({
           <Button
             onClick={onClaim}
             className={`mt-4 bg-gradient-to-r ${config.color} hover:opacity-90 text-white font-semibold`}
+            aria-label={`Claim ${config.name} instrument`}
           >
-            <Music2 className="w-4 h-4 mr-2" />
+            <Music2 className="w-4 h-4 mr-2" aria-hidden="true" />
             Claim {config.name}
           </Button>
         )}

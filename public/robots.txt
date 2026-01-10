@@ -1,0 +1,11 @@
+# Robots.txt for Jam in a Docs
+User-agent: *
+Allow: /
+
+# Disallow admin/internal paths if any
+Disallow: /api/
+Disallow: /admin/
+
+# Sitemap (add when available)
+# Sitemap: https://yourdomain.com/sitemap.xml
+

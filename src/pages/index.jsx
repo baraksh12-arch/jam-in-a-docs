@@ -6,7 +6,7 @@ import Room from "./Room";
 
 import Setup from "./Setup";
 
-import ErrorBoundary from "../components/ErrorBoundary";
+import { ErrorBoundary } from "../components/ErrorBoundary";
 
 import { BrowserRouter as Router, Route, Routes, useLocation } from 'react-router-dom';
 

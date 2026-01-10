@@ -1,10 +1,12 @@
+import React from 'react';
+import { captureError } from '@/lib/errorTracking';
+
 /**
  * Error Boundary Component
- * Catches rendering errors and displays a fallback UI
+ * Catches React errors and displays a user-friendly error message
+ * Uses inline styles to avoid dependency on UI components that might fail
  */
-import React from 'react';
-
-class ErrorBoundaryClass extends React.Component {
+export class ErrorBoundary extends React.Component {
   constructor(props) {
     super(props);
     this.state = { hasError: false, error: null, errorInfo: null };
@@ -20,69 +22,118 @@ class ErrorBoundaryClass extends React.Component {
       error,
       errorInfo
     });
+    
+    // Send to error tracking service
+    captureError(error, {
+      errorInfo,
+      componentStack: errorInfo?.componentStack,
+      errorBoundary: true,
+    });
   }
 
   handleReset = () => {
     this.setState({ hasError: false, error: null, errorInfo: null });
+    window.location.reload();
   };
 
   render() {
     if (this.state.hasError) {
+      // Use inline styles to avoid dependency on UI components
+      const containerStyle = {
+        minHeight: '100vh',
+        background: 'linear-gradient(to bottom right, #0f172a, #581c87, #0f172a)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: '1rem',
+        color: 'white'
+      };
+
+      const cardStyle = {
+        maxWidth: '42rem',
+        width: '100%',
+        background: 'rgba(255, 255, 255, 0.1)',
+        backdropFilter: 'blur(8px)',
+        border: '1px solid rgba(239, 68, 68, 0.5)',
+        borderRadius: '0.75rem',
+        padding: '1.5rem'
+      };
+
+      const buttonStyle = {
+        padding: '0.5rem 1rem',
+        borderRadius: '0.375rem',
+        border: 'none',
+        cursor: 'pointer',
+        fontSize: '0.875rem',
+        fontWeight: '500',
+        marginRight: '0.75rem'
+      };
+
       return (
-        <ErrorFallback 
-          error={this.state.error} 
-          errorInfo={this.state.errorInfo}
-          onReset={this.handleReset}
-        />
+        <div style={containerStyle}>
+          <div style={cardStyle}>
+            <div style={{ marginBottom: '1rem' }}>
+              <h2 style={{ fontSize: '1.5rem', fontWeight: 'bold', color: '#fca5a5', marginBottom: '0.5rem' }}>
+                ⚠️ Something went wrong
+              </h2>
+              <p style={{ color: 'rgba(255, 255, 255, 0.8)', marginBottom: '1rem' }}>
+                We encountered an unexpected error. This has been logged and we'll look into it.
+              </p>
+              
+              {import.meta.env.DEV && this.state.error && (
+                <details style={{ marginTop: '1rem' }}>
+                  <summary style={{ color: 'rgba(255, 255, 255, 0.6)', cursor: 'pointer', fontSize: '0.875rem' }}>
+                    Error details (development only)
+                  </summary>
+                  <pre style={{
+                    marginTop: '0.5rem',
+                    padding: '1rem',
+                    background: 'rgba(0, 0, 0, 0.5)',
+                    borderRadius: '0.375rem',
+                    fontSize: '0.75rem',
+                    color: '#fca5a5',
+                    overflow: 'auto',
+                    maxHeight: '16rem'
+                  }}>
+                    {this.state.error.toString()}
+                    {this.state.errorInfo?.componentStack}
+                  </pre>
+                </details>
+              )}
+
+              <div style={{ display: 'flex', gap: '0.75rem', marginTop: '1rem' }}>
+                <button
+                  onClick={this.handleReset}
+                  style={{
+                    ...buttonStyle,
+                    background: '#9333ea',
+                    color: 'white'
+                  }}
+                  onMouseOver={(e) => e.target.style.background = '#7e22ce'}
+                  onMouseOut={(e) => e.target.style.background = '#9333ea'}
+                >
+                  🔄 Reload App
+                </button>
+                <button
+                  onClick={() => window.history.back()}
+                  style={{
+                    ...buttonStyle,
+                    background: 'transparent',
+                    color: 'white',
+                    border: '1px solid rgba(255, 255, 255, 0.3)'
+                  }}
+                  onMouseOver={(e) => e.target.style.background = 'rgba(255, 255, 255, 0.1)'}
+                  onMouseOut={(e) => e.target.style.background = 'transparent'}
+                >
+                  ← Go Back
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       );
     }
 
     return this.props.children;
   }
 }
-
-function ErrorFallback({ error, errorInfo, onReset }) {
-  const handleGoHome = () => {
-    window.location.href = '/';
-  };
-
-  return (
-    <div className="min-h-screen bg-slate-900 flex items-center justify-center">
-      <div className="text-center max-w-2xl mx-auto px-4">
-        <h1 className="text-3xl font-bold text-red-400 mb-4">Something went wrong</h1>
-        <p className="text-gray-300 mb-6">
-          The room failed to load. This might be due to a network issue or a bug.
-        </p>
-        
-        {import.meta.env.DEV && error && (
-          <div className="bg-black/50 rounded-lg p-4 mb-6 text-left overflow-auto max-h-64">
-            <p className="text-red-300 font-mono text-sm mb-2">{error.toString()}</p>
-            {errorInfo && (
-              <pre className="text-xs text-gray-400 whitespace-pre-wrap">
-                {errorInfo.componentStack}
-              </pre>
-            )}
-          </div>
-        )}
-
-        <div className="flex gap-4 justify-center">
-          <button
-            onClick={onReset}
-            className="px-4 py-2 bg-purple-600 text-white rounded hover:bg-purple-700"
-          >
-            Try Again
-          </button>
-          <button
-            onClick={handleGoHome}
-            className="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700"
-          >
-            Back to Home
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-export default ErrorBoundaryClass;
-

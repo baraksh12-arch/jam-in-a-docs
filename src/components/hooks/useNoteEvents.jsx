@@ -5,6 +5,8 @@ import { IMMEDIATE_PLAYBACK_THRESHOLD_SECONDS } from '@/lib/clockSync';
 import { CURRENT_LATENCY_MODE, LATENCY_MODES } from '@/config/latencyMode';
 import { syncedNow } from '@/lib/time/syncedNow';
 import { scheduleNote } from '@/lib/audio/scheduler';
+import { noteEventLimiter } from '@/lib/rateLimiter';
+import { validateMIDINote, validateVelocity, validateInstrument, validateDrumPad } from '@/lib/validation';
 // TODO: Deprecated - Supabase note_events table is no longer used for live audio
 // import { subscribeToNoteEvents, sendNoteEvent } from '../firebaseClient';
 
@@ -208,6 +210,40 @@ export function useNoteEvents(roomId, userId, audioEngine, peers, room, onNoteAc
    */
   const sendNote = useCallback(async (instrument, note, type = 'NOTE_ON', velocity = 100) => {
     if (!roomId || !userId || !webrtcInstance?.sendJamEvent) return;
+
+    // Rate limiting for note events
+    if (!noteEventLimiter.isAllowed()) {
+      if (DEBUG_WEBRTC) {
+        console.warn('[useNoteEvents] Rate limit exceeded for note events');
+      }
+      return; // Silently drop if rate limited (better than blocking user)
+    }
+
+    // Input validation
+    if (!validateInstrument(instrument)) {
+      console.warn(`[useNoteEvents] Invalid instrument: ${instrument}`);
+      return;
+    }
+
+    if (type === 'NOTE_ON' || type === 'NOTE_OFF') {
+      // Drums use pad IDs (strings like 'kick', 'snare'), not MIDI numbers
+      if (instrument === 'DRUMS') {
+        if (!validateDrumPad(note)) {
+          console.warn(`[useNoteEvents] Invalid drum pad: ${note}`);
+          return;
+        }
+      } else {
+        if (!validateMIDINote(note)) {
+          console.warn(`[useNoteEvents] Invalid MIDI note: ${note}`);
+          return;
+        }
+      }
+    }
+
+    if (type === 'NOTE_ON' && !validateVelocity(velocity)) {
+      console.warn(`[useNoteEvents] Invalid velocity: ${velocity}`);
+      return;
+    }
 
     try {
       // Get current room time from clock sync (uses syncedNow() internally if available)

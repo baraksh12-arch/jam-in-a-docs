@@ -156,8 +156,8 @@ export class ClockSyncManager {
       const queryPromise = supabase
         .from('rooms')
         .select('updated_at')
-        .eq('id', this.roomId)
-        .single();
+        .eq('id', this.roomId.toUpperCase()) // Ensure case-insensitive match
+        .maybeSingle(); // Use maybeSingle() to handle 0 rows gracefully
       
       const timeoutPromise = new Promise((_, reject) => 
         setTimeout(() => reject(new Error('Query timeout')), 5000)
@@ -187,6 +187,13 @@ export class ClockSyncManager {
       
       if (error) {
         console.warn('[ClockSyncManager] Failed to get server time:', error);
+        // Fallback: Use peer-to-peer sync
+        this.performPeerSync();
+        return;
+      }
+      
+      if (!data) {
+        console.warn('[ClockSyncManager] Room not found for time sync:', this.roomId);
         // Fallback: Use peer-to-peer sync
         this.performPeerSync();
         return;

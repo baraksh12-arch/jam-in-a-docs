@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { CURRENT_LATENCY_MODE, LATENCY_MODES } from '@/config/latencyMode';
 import * as ToneInstruments from '@/lib/instruments';
+import * as Tone from 'tone';
 
 /**
  * Debug flag for latency mode logging
@@ -72,6 +73,11 @@ export function useAudioEngine() {
           ToneInstruments.setInstrumentVolume('GUITAR', instrumentVolumesRef.current.GUITAR);
           
           console.log('[AudioEngine] Tone.js instruments initialized and ready');
+          
+          // REMOVED: Warmup sounds that were playing audibly on room enter
+          // The audio context will be warmed up on first user interaction instead
+          // This prevents the annoying sound burst when joining a room
+          console.log('[AudioEngine] Tone.js instruments initialized (warmup deferred to first interaction)');
         } catch (toneError) {
           console.warn('[AudioEngine] Tone.js initialization failed, falling back to raw Web Audio API:', toneError);
           toneInstrumentsReadyRef.current = false;
@@ -697,6 +703,15 @@ export function useAudioEngine() {
   const stopNote = useCallback((instrument, note) => {
     const noteKey = `${instrument}_${note}`;
     activeNotesRef.current.delete(noteKey);
+    
+    // Release note on Tone.js instruments (for natural sustain release)
+    if (useToneJsRef.current && toneInstrumentsReadyRef.current) {
+      try {
+        ToneInstruments.releaseNote?.(instrument, note);
+      } catch (error) {
+        // Non-fatal - some instruments don't support release
+      }
+    }
   }, []);
 
   /**

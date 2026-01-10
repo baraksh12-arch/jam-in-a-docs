@@ -1,20 +1,36 @@
 import * as Tone from 'tone';
 
 /**
- * Guitar Instrument using Tone.Synth with Distortion and Reverb
+ * Guitar Instrument with Professional Sound Design
  * 
- * Creates a plucked string sound with effects for realistic guitar tone.
- * Uses Karplus-Strong inspired synthesis with distortion and reverb.
+ * Two modes for versatile playing:
+ * 1. Electric Guitar - Karplus-Strong plucked string model with amp simulation
+ * 2. Nylon Guitar - Warm acoustic nylon string with body resonance
+ * 
+ * Uses Tone.PluckSynth for realistic plucked string sounds (Google Shared Piano quality).
  */
 
-let synth = null;
-let distortion = null;
-let reverb = null;
+// Guitar mode constants
+export const GUITAR_MODE_ELECTRIC = 'electric';
+export const GUITAR_MODE_NYLON = 'nylon';
+
+let electricSynth = null;
+let electricChorus = null;
+let electricDistortion = null;
+let electricReverb = null;
+let electricCompressor = null;
+
+let nylonSynth = null;
+let nylonReverb = null;
+let nylonEQ = null;
+
+let currentGuitarMode = GUITAR_MODE_ELECTRIC;
 let masterVolume = 0.7;
 let isInitialized = false;
 
 /**
- * Initialize the guitar synthesizer with effects
+ * Initialize both guitar synthesizers (Electric and Nylon)
+ * Uses Tone.PluckSynth for realistic Karplus-Strong plucked string synthesis
  * 
  * @returns {Promise<void>}
  */
@@ -24,46 +40,90 @@ export async function initGuitar() {
   }
 
   try {
-    // Create synth with plucked string characteristics
-    synth = new Tone.Synth({
-      oscillator: {
-        type: 'sawtooth',
-      },
-      envelope: {
-        attack: 0.005,  // Very fast attack for pluck
-        decay: 0.3,
-        sustain: 0.15,
-        release: 0.5,
-      },
+    // === ELECTRIC GUITAR ===
+    // PluckSynth uses Karplus-Strong algorithm for realistic plucked strings
+    electricSynth = new Tone.PluckSynth({
+      attackNoise: 2,      // Amount of attack "pick" noise
+      dampening: 4000,     // Higher = brighter sustain (4kHz cutoff)
+      resonance: 0.98,     // String resonance (higher = longer sustain)
+      release: 1,          // Release time
       volume: Tone.gainToDb(masterVolume),
     });
+    
+    // Compressor for consistent dynamics (like a real amp)
+    electricCompressor = new Tone.Compressor({
+      threshold: -20,
+      ratio: 4,
+      attack: 0.003,
+      release: 0.25,
+    });
+    
+    // Subtle chorus for width (like a JC-120 clean tone)
+    electricChorus = new Tone.Chorus({
+      frequency: 1.5,
+      delayTime: 3.5,
+      depth: 0.3,
+      wet: 0.15,
+      spread: 180,
+    }).start();
 
-    // Create distortion effect
-    distortion = new Tone.Distortion({
-      distortion: 0.4,  // Moderate distortion
-      wet: 0.3,         // 30% wet signal
+    // Overdrive for grit (tube amp simulation)
+    electricDistortion = new Tone.Distortion({
+      distortion: 0.25,   // Subtle crunch
+      wet: 0.4,
     });
 
-    // Create reverb effect
-    reverb = new Tone.Reverb({
-      roomSize: 0.5,
-      wet: 0.2,         // 20% wet signal
+    // Reverb for space (spring reverb character)
+    electricReverb = new Tone.Reverb({
+      decay: 1.5,
+      wet: 0.15,
     });
 
-    // Connect: synth -> distortion -> reverb -> destination
-    synth.connect(distortion);
-    distortion.connect(reverb);
-    reverb.toDestination();
+    // Signal chain: synth -> compressor -> chorus -> distortion -> reverb -> out
+    electricSynth.connect(electricCompressor);
+    electricCompressor.connect(electricChorus);
+    electricChorus.connect(electricDistortion);
+    electricDistortion.connect(electricReverb);
+    electricReverb.toDestination();
 
-    // Generate reverb impulse response (required for reverb to work)
-    await reverb.generate();
+    // === NYLON GUITAR ===
+    // Warmer, softer attack for classical/acoustic feel
+    nylonSynth = new Tone.PluckSynth({
+      attackNoise: 1,      // Less pick attack for finger-style
+      dampening: 2500,     // Lower cutoff for warmer tone
+      resonance: 0.96,     // Slightly less sustain
+      release: 1.5,        // Longer release for body resonance
+      volume: Tone.gainToDb(masterVolume),
+    });
+    
+    // EQ to shape the body resonance
+    nylonEQ = new Tone.EQ3({
+      low: 2,              // Boost lows for body
+      mid: -1,             // Slight mid cut
+      high: -2,            // Roll off highs for warmth
+      lowFrequency: 200,
+      highFrequency: 2500,
+    });
 
-    // Store effects references for cleanup
-    synth._distortion = distortion;
-    synth._reverb = reverb;
+    // Larger reverb for acoustic space
+    nylonReverb = new Tone.Reverb({
+      decay: 2.5,
+      wet: 0.3,
+    });
+
+    // Signal chain: synth -> EQ -> reverb -> out
+    nylonSynth.connect(nylonEQ);
+    nylonEQ.connect(nylonReverb);
+    nylonReverb.toDestination();
+
+    // Generate reverb impulse responses
+    await Promise.all([
+      electricReverb.generate(),
+      nylonReverb.generate()
+    ]);
 
     isInitialized = true;
-    console.log('[Guitar] Initialized with Tone.Synth + Distortion + Reverb');
+    console.log('[Guitar] Initialized with PluckSynth (Karplus-Strong) for realistic guitar sounds');
   } catch (error) {
     console.error('[Guitar] Failed to initialize:', error);
     throw error;
@@ -71,14 +131,15 @@ export async function initGuitar() {
 }
 
 /**
- * Trigger a guitar note
+ * Trigger a guitar note using the current mode (Electric or Nylon)
+ * PluckSynth uses triggerAttack with frequency - it's a one-shot pluck
  * 
  * @param {number} note - MIDI note number (0-127)
  * @param {number} time - Time in Tone.Transport time (seconds) or AudioContext time
  * @param {number} [velocity=100] - MIDI velocity (0-127), defaults to 100
  */
 export function triggerNote(note, time, velocity = 100) {
-  if (!isInitialized || !synth) {
+  if (!isInitialized) {
     console.warn('[Guitar] Not initialized, cannot trigger note');
     return;
   }
@@ -89,35 +150,92 @@ export function triggerNote(note, time, velocity = 100) {
     return;
   }
 
-  // Convert MIDI note to frequency
-  const frequency = Tone.Frequency(note, 'midi').toFrequency();
+  // Get the active synth based on current mode
+  const activeSynth = currentGuitarMode === GUITAR_MODE_ELECTRIC ? electricSynth : nylonSynth;
+  
+  if (!activeSynth) {
+    console.warn(`[Guitar] Synth not available for mode: ${currentGuitarMode}`);
+    return;
+  }
 
-  // Convert velocity to gain (0-127 -> 0-1)
-  const velocityGain = velocity / 127;
+  // Convert MIDI note to note name for PluckSynth
+  const noteName = Tone.Frequency(note, 'midi').toNote();
 
+  // Enhanced velocity mapping: use exponential curve for more natural response
+  // Guitar dynamics: soft picking vs hard attack
+  const normalizedVelocity = Math.max(0, Math.min(127, velocity)) / 127;
+  const velocityGain = Math.pow(normalizedVelocity, 0.6); // 0.6 curve for expressive dynamics
+  
   // Set volume based on velocity
   const currentVolume = Tone.gainToDb(masterVolume * velocityGain);
-  synth.volume.value = currentVolume;
-
-  // Trigger the note
-  // If time is provided, schedule it; otherwise play immediately
-  if (time !== undefined && time !== null) {
-    synth.triggerAttackRelease(frequency, '8n', time);
+  activeSynth.volume.value = currentVolume;
+  
+  // Adjust attack noise based on velocity (harder = more pick attack)
+  if (currentGuitarMode === GUITAR_MODE_ELECTRIC) {
+    activeSynth.attackNoise = 1 + normalizedVelocity * 2; // 1-3 range
   } else {
-    synth.triggerAttackRelease(frequency, '8n', Tone.now());
+    activeSynth.attackNoise = 0.5 + normalizedVelocity * 1; // 0.5-1.5 range
+  }
+
+  // PluckSynth uses triggerAttack with note name
+  // It's inherently a one-shot (plucked string decays naturally)
+  if (time !== undefined && time !== null) {
+    activeSynth.triggerAttack(noteName, time);
+  } else {
+    activeSynth.triggerAttack(noteName, Tone.now());
   }
 }
 
 /**
- * Set master volume for guitar
+ * Set the guitar mode (Electric or Nylon)
+ * Stops all active notes before switching to prevent stuck notes
+ * 
+ * @param {string} mode - GUITAR_MODE_ELECTRIC or GUITAR_MODE_NYLON
+ */
+export function setGuitarMode(mode) {
+  if (mode !== GUITAR_MODE_ELECTRIC && mode !== GUITAR_MODE_NYLON) {
+    console.warn(`[Guitar] Invalid guitar mode: ${mode}`);
+    return;
+  }
+
+  // Stop all active notes before switching
+  stopAllNotes();
+
+  currentGuitarMode = mode;
+  console.log(`[Guitar] Guitar mode switched to: ${mode}`);
+}
+
+/**
+ * Get the current guitar mode
+ * 
+ * @returns {string} Current mode (GUITAR_MODE_ELECTRIC or GUITAR_MODE_NYLON)
+ */
+export function getGuitarMode() {
+  return currentGuitarMode;
+}
+
+/**
+ * Stop all active notes on both synths
+ * PluckSynth doesn't need explicit release (decays naturally)
+ * But we can dispose and recreate if needed
+ */
+export function stopAllNotes() {
+  // PluckSynth sounds decay naturally, no explicit stop needed
+  // This is a no-op for plucked string synths
+}
+
+/**
+ * Set master volume for guitar (both synths)
  * 
  * @param {number} volume - Volume (0-1)
  */
 export function setVolume(volume) {
   masterVolume = Math.max(0, Math.min(1, volume));
-  if (synth) {
-    // Preserve velocity scaling when setting volume
-    synth.volume.value = Tone.gainToDb(masterVolume);
+  if (electricSynth) {
+    electricSynth.volume.value = Tone.gainToDb(masterVolume);
+  }
+  if (nylonSynth) {
+    nylonSynth.volume.value = Tone.gainToDb(masterVolume);
   }
 }
 
@@ -131,44 +249,70 @@ export function getVolume() {
 }
 
 /**
- * Set distortion amount
+ * Set distortion amount (Electric guitar only)
  * 
  * @param {number} amount - Distortion amount (0-1)
  */
 export function setDistortion(amount) {
-  if (distortion) {
-    distortion.distortion = Math.max(0, Math.min(1, amount));
+  if (electricDistortion) {
+    electricDistortion.distortion = Math.max(0, Math.min(1, amount));
   }
 }
 
 /**
- * Set reverb amount
+ * Set reverb amount (applies to current mode's reverb)
  * 
  * @param {number} amount - Reverb wet amount (0-1)
  */
 export function setReverb(amount) {
-  if (reverb) {
-    reverb.wet.value = Math.max(0, Math.min(1, amount));
+  if (currentGuitarMode === GUITAR_MODE_ELECTRIC && electricReverb) {
+    electricReverb.wet.value = Math.max(0, Math.min(1, amount));
+  } else if (currentGuitarMode === GUITAR_MODE_NYLON && nylonReverb) {
+    nylonReverb.wet.value = Math.max(0, Math.min(1, amount));
   }
 }
 
 /**
- * Cleanup and dispose of the synthesizer and effects
+ * Cleanup and dispose of both synthesizers and effects
  */
 export function dispose() {
-  if (synth) {
-    if (synth._distortion) {
-      synth._distortion.dispose();
-    }
-    if (synth._reverb) {
-      synth._reverb.dispose();
-    }
-    synth.dispose();
-    synth = null;
-    distortion = null;
-    reverb = null;
-    isInitialized = false;
+  // Dispose electric guitar chain
+  if (electricSynth) {
+    electricSynth.dispose();
+    electricSynth = null;
   }
+  if (electricCompressor) {
+    electricCompressor.dispose();
+    electricCompressor = null;
+  }
+  if (electricChorus) {
+    electricChorus.dispose();
+    electricChorus = null;
+  }
+  if (electricDistortion) {
+    electricDistortion.dispose();
+    electricDistortion = null;
+  }
+  if (electricReverb) {
+    electricReverb.dispose();
+    electricReverb = null;
+  }
+  
+  // Dispose nylon guitar chain
+  if (nylonSynth) {
+    nylonSynth.dispose();
+    nylonSynth = null;
+  }
+  if (nylonEQ) {
+    nylonEQ.dispose();
+    nylonEQ = null;
+  }
+  if (nylonReverb) {
+    nylonReverb.dispose();
+    nylonReverb = null;
+  }
+  
+  isInitialized = false;
 }
 
 /**
@@ -177,6 +321,6 @@ export function dispose() {
  * @returns {boolean}
  */
 export function isReady() {
-  return isInitialized && synth !== null;
+  return isInitialized && (electricSynth !== null || nylonSynth !== null);
 }
 

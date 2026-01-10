@@ -5,7 +5,7 @@ const INSTRUMENTS = ['DRUMS', 'BASS', 'EP', 'GUITAR'];
 
 export default function InstrumentGrid({ players, currentPlayer, audioEngine, sendNote, room }) {
   return (
-    <div className="grid md:grid-cols-2 gap-4">
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 md:gap-6">
       {INSTRUMENTS.map(instrument => {
         const player = players.find(p => p.instrument === instrument);
         const isMyInstrument = currentPlayer?.instrument === instrument;
