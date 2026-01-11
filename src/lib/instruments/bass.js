@@ -172,9 +172,21 @@ export function setSampledBassTranspose(semitones) {
  * Play a bass note with sustain - note will hold until released
  * Perfect for expressive bass playing like Jacob Collier
  */
-export function playBass(note, time, velocity) {
-  if (!isInitialized || Tone.getContext().state !== "running") {
+export async function playBass(note, time, velocity) {
+  if (!isInitialized) {
     return;
+  }
+  
+  // Ensure AudioContext is running (critical for iOS/Android)
+  const context = Tone.getContext();
+  if (context.state !== "running") {
+    try {
+      await Tone.start();
+      console.log("[Bass] AudioContext resumed via Tone.start()");
+    } catch (e) {
+      console.warn("[Bass] Failed to resume AudioContext:", e);
+      return;
+    }
   }
 
   const v = normalizeVelocity(velocity);

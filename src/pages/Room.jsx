@@ -14,7 +14,9 @@ import InstrumentGrid from '../components/InstrumentGrid';
 import ChatPanel from '../components/ChatPanel';
 import CrowdPanel from '../components/crowd/CrowdPanel';
 import CrowdViewer from '../components/crowd/CrowdViewer';
-import { FocusModeView } from '../components/focus';
+import { FocusModeView, MobileFocusView } from '../components/focus';
+import AudioUnlock from '../components/audio/AudioUnlock';
+import { useMIDIInstrument } from '../hooks/useMIDI';
 import { Loader2, AlertCircle, Music, Wifi, WifiOff, Users, Volume2, Eye, Video, Expand } from 'lucide-react';
 import { useOrientation } from '../hooks/use-orientation';
 import { useIsMobile } from '../hooks/use-mobile';
@@ -87,6 +89,16 @@ export default function Room() {
   const [initializing, setInitializing] = useState(true);
   const [showInstruments, setShowInstruments] = useState(false);
   const [focusMode, setFocusMode] = useState(false);
+  const [audioUnlocked, setAudioUnlocked] = useState(false);
+  const [showAudioUnlock, setShowAudioUnlock] = useState(false);
+  
+  // MIDI support for instrument
+  const midi = useMIDIInstrument({
+    instrument: currentPlayer?.instrument,
+    audioEngine,
+    sendNote,
+    enabled: !!currentPlayer?.instrument && audioUnlocked
+  });
 
   useEffect(() => {
     const initRoom = async () => {
@@ -167,6 +179,32 @@ export default function Room() {
       audioEngine.stopMetronome();
     }
   }, [room?.isPlaying, room?.metronomeOn, room?.bpm, audioEngine]);
+
+  // Check audio context state - show unlock screen if needed (especially on iOS/Android)
+  useEffect(() => {
+    // On mobile, we need user interaction to unlock audio
+    if (isMobile && !audioUnlocked && !isCrowdMode) {
+      setShowAudioUnlock(true);
+    }
+  }, [isMobile, audioUnlocked, isCrowdMode]);
+
+  // Handle audio unlock completion
+  const handleAudioUnlocked = useCallback(() => {
+    setAudioUnlocked(true);
+    setShowAudioUnlock(false);
+    console.log('[Room] Audio unlocked successfully');
+  }, []);
+
+  // Auto-enter focus mode on mobile when instrument is selected
+  useEffect(() => {
+    if (isMobile && currentPlayer?.instrument && audioUnlocked && !focusMode) {
+      // Small delay to ensure everything is ready
+      const timer = setTimeout(() => {
+        setFocusMode(true);
+      }, 300);
+      return () => clearTimeout(timer);
+    }
+  }, [isMobile, currentPlayer?.instrument, audioUnlocked, focusMode]);
 
   // ESC key to exit focus mode
   useEffect(() => {
@@ -389,28 +427,60 @@ export default function Room() {
     );
   };
 
+  // Show audio unlock screen for mobile
+  if (showAudioUnlock && !audioUnlocked && !isCrowdMode) {
+    return (
+      <AudioUnlock 
+        onUnlocked={handleAudioUnlocked}
+        isMobile={isMobile}
+      />
+    );
+  }
+
   return (
     <div className="min-h-screen bg-[#0a0a0f] relative">
-      {/* Focus Mode Overlay */}
+      {/* Focus Mode Overlay - Use MobileFocusView on mobile for premium experience */}
       <AnimatePresence>
         {focusMode && currentPlayer?.instrument && (
-          <FocusModeView
-            instrument={currentPlayer.instrument}
-            player={currentPlayer}
-            audioEngine={audioEngine}
-            sendNote={sendNote}
-            onExit={() => setFocusMode(false)}
-            roomId={roomId}
-            userId={userId}
-            displayName={displayName}
-            crowdMembers={crowdMembers}
-            localStream={crowdWebRTC.localStream}
-            remoteStreams={crowdWebRTC.remoteStreams}
-            isBroadcasting={crowdWebRTC.isBroadcasting}
-            onStartBroadcast={crowdWebRTC.startBroadcast}
-            onStopBroadcast={crowdWebRTC.stopBroadcast}
-            isMobile={isMobile}
-          />
+          isMobile ? (
+            <MobileFocusView
+              instrument={currentPlayer.instrument}
+              player={currentPlayer}
+              audioEngine={audioEngine}
+              sendNote={sendNote}
+              onExit={() => setFocusMode(false)}
+              roomId={roomId}
+              userId={userId}
+              displayName={displayName}
+              color={color}
+              players={players}
+              crowdMembers={crowdMembers}
+              localStream={crowdWebRTC.localStream}
+              remoteStreams={crowdWebRTC.remoteStreams}
+              isBroadcasting={crowdWebRTC.isBroadcasting}
+              onStartBroadcast={crowdWebRTC.startBroadcast}
+              onStopBroadcast={crowdWebRTC.stopBroadcast}
+              cameraError={crowdWebRTC.cameraError}
+            />
+          ) : (
+            <FocusModeView
+              instrument={currentPlayer.instrument}
+              player={currentPlayer}
+              audioEngine={audioEngine}
+              sendNote={sendNote}
+              onExit={() => setFocusMode(false)}
+              roomId={roomId}
+              userId={userId}
+              displayName={displayName}
+              crowdMembers={crowdMembers}
+              localStream={crowdWebRTC.localStream}
+              remoteStreams={crowdWebRTC.remoteStreams}
+              isBroadcasting={crowdWebRTC.isBroadcasting}
+              onStartBroadcast={crowdWebRTC.startBroadcast}
+              onStopBroadcast={crowdWebRTC.stopBroadcast}
+              isMobile={isMobile}
+            />
+          )
         )}
       </AnimatePresence>
 

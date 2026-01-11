@@ -115,9 +115,26 @@ export function validateChatMessage(message) {
 }
 
 /**
- * Valid drum pad IDs
+ * Valid drum pad IDs (string names)
  */
-export const VALID_DRUM_PADS = ['kick', 'snare', 'hihat', 'openhat', 'tom1', 'tom2', 'crash', 'ride'];
+export const VALID_DRUM_PADS = ['kick', 'snare', 'hihat', 'openhat', 'tom1', 'tom2', 'crash', 'ride', 'clap'];
+
+/**
+ * Valid MIDI note numbers for drums (General MIDI drum standard)
+ * These map to drum pad IDs in the audio engine
+ */
+export const VALID_DRUM_MIDI_NOTES = [
+  36, // kick (GM Bass Drum 1)
+  38, // snare (GM Acoustic Snare)
+  39, // clap (GM Hand Clap)
+  42, // hihat (GM Closed Hi-Hat)
+  45, // floor tom (GM Low Tom)
+  46, // open hihat (GM Open Hi-Hat)
+  47, // tom2 (GM Low-Mid Tom)
+  48, // tom1 (GM Hi-Mid Tom)
+  49, // crash (GM Crash Cymbal 1)
+  51, // ride (GM Ride Cymbal 1)
+];
 
 /**
  * Validate MIDI note number
@@ -134,13 +151,22 @@ export function validateMIDINote(note) {
 
 /**
  * Validate drum pad ID
- * Drums use string identifiers like 'kick', 'snare', etc.
+ * Drums can use string identifiers like 'kick', 'snare', etc.
+ * OR MIDI note numbers (36, 38, etc.) for DrumSetView compatibility
  * 
- * @param {string} padId - Drum pad ID
+ * @param {string|number} padId - Drum pad ID (string) or MIDI note number
  * @returns {boolean}
  */
 export function validateDrumPad(padId) {
-  return typeof padId === 'string' && VALID_DRUM_PADS.includes(padId.toLowerCase());
+  // Accept string drum pad names
+  if (typeof padId === 'string') {
+    return VALID_DRUM_PADS.includes(padId.toLowerCase());
+  }
+  // Accept MIDI note numbers for DrumSetView
+  if (typeof padId === 'number' && Number.isInteger(padId)) {
+    return VALID_DRUM_MIDI_NOTES.includes(padId);
+  }
+  return false;
 }
 
 /**

@@ -28,6 +28,21 @@ const DRUM_NOTE_MAP = {
   'crash': 'C2',
 };
 
+// MIDI note number to drum name mapping (General MIDI drum standard)
+// This allows DrumSetView to pass MIDI note numbers that get converted to drum names
+const MIDI_TO_DRUM_MAP = {
+  36: 'kick',     // GM Bass Drum 1
+  38: 'snare',    // GM Acoustic Snare
+  39: 'clap',     // GM Hand Clap
+  42: 'hihat',    // GM Closed Hi-Hat
+  46: 'hihat',    // GM Open Hi-Hat (mapped to hihat for now)
+  45: 'tom2',     // GM Low Tom (Floor Tom - mapped to tom2)
+  47: 'tom2',     // GM Low-Mid Tom
+  48: 'tom1',     // GM Hi-Mid Tom
+  49: 'crash',    // GM Crash Cymbal 1
+  51: 'ride',     // GM Ride Cymbal 1
+};
+
 // Sample URLs - using local drum samples from /samples/drums/
 // Tone.js v15 Sampler requires note names (C1, D1, etc.) or MIDI numbers as keys
 // Each note gets its own file, so triggering the exact note plays the file at original pitch (no pitch-shifting)
@@ -283,20 +298,37 @@ export function getDrumKitMode() {
  * Trigger a drum sound
  * Routes to the appropriate engine based on current kit mode
  * 
- * @param {string} name - Drum pad ID (e.g., 'kick', 'snare', 'hihat', etc.)
+ * @param {string|number} nameOrMidi - Drum pad ID (e.g., 'kick', 'snare') OR MIDI note number (36, 38, etc.)
  * @param {number} time - Time in Tone.Transport time (seconds) or AudioContext time
  * @param {number} [velocity=100] - MIDI velocity (0-127), defaults to 100
  */
-export function triggerNote(name, time, velocity = 100) {
+export async function triggerNote(nameOrMidi, time, velocity = 100) {
   if (!isInitialized) {
     console.warn('[Drums] Not initialized, cannot trigger note');
     return;
   }
 
-  // Check if AudioContext is running (required for Tone.js)
-  if (Tone.getContext().state !== 'running') {
-    console.warn('[Drums] AudioContext not running, cannot trigger note');
-    return;
+  // Convert MIDI note number to drum name if needed
+  let drumName = nameOrMidi;
+  if (typeof nameOrMidi === 'number') {
+    drumName = MIDI_TO_DRUM_MAP[nameOrMidi];
+    if (!drumName) {
+      console.warn(`[Drums] Unknown MIDI note: ${nameOrMidi}`);
+      return;
+    }
+  }
+
+  // Ensure AudioContext is running (critical for iOS/Android)
+  // This must be called from a user gesture handler
+  const context = Tone.getContext();
+  if (context.state !== 'running') {
+    try {
+      await Tone.start();
+      console.log('[Drums] AudioContext resumed via Tone.start()');
+    } catch (e) {
+      console.warn('[Drums] Failed to resume AudioContext:', e);
+      return;
+    }
   }
 
   // Enhanced velocity mapping for drums: use exponential curve for more dynamic response
@@ -314,13 +346,13 @@ export function triggerNote(name, time, velocity = 100) {
     }
 
     // Map drum pad ID to note name (C1, D1, etc.) for Tone.Sampler
-    const note = DRUM_NOTE_MAP[name];
+    const note = DRUM_NOTE_MAP[drumName];
     if (!note) {
-      console.warn(`[Drums] Unknown drum pad ID: ${name}`);
+      console.warn(`[Drums] Unknown drum pad ID: ${drumName}`);
       return;
     }
 
-    console.log(`[Drums] Sampled kit: ${name} → ${note}`);
+    console.log(`[Drums] Sampled kit: ${drumName} → ${note}`);
 
     // Trigger the note using the note name (C1, D1, etc.)
     // Each note has its own file, so triggering the exact note plays the file at original pitch (no pitch-shifting)
@@ -336,13 +368,13 @@ export function triggerNote(name, time, velocity = 100) {
       return;
     }
 
-    const voice = electronicDrumKit[name];
+    const voice = electronicDrumKit[drumName];
     if (!voice) {
-      console.warn(`[Drums] Electronic kit: unknown voice: ${name}`);
+      console.warn(`[Drums] Electronic kit: unknown voice: ${drumName}`);
       return;
     }
 
-    console.log(`[Drums] Electronic kit: ${name}`);
+    console.log(`[Drums] Electronic kit: ${drumName}`);
 
     // Electronic voices use different frequencies for different sounds
     const frequencies = {

@@ -1,5 +1,14 @@
 export { default as FocusModeView } from './FocusModeView';
+export { default as MobileFocusView } from './MobileFocusView';
 export { default as FullscreenDrumPad } from './FullscreenDrumPad';
 export { default as FullscreenKeyboard } from './FullscreenKeyboard';
+export { default as DrumSetView } from './DrumSetView';
+export { default as ChordPadView } from './ChordPadView';
+export { default as BassGuitarView } from './BassGuitarView';
+export { default as GuitarNeckView } from './GuitarNeckView';
+export { default as BandCameraStage } from './BandCameraStage';
+export { default as BandMemberIndicators } from './BandMemberIndicators';
+export { default as CameraStrip } from './CameraStrip';
+export { default as CompactChatBar } from './CompactChatBar';
 export { default as FloatingChatWidget } from './FloatingChatWidget';
 export { default as FloatingCrowdWidget } from './FloatingCrowdWidget';

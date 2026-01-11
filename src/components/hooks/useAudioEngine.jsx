@@ -113,9 +113,36 @@ export function useAudioEngine() {
     };
   }, []);
 
+  /**
+   * Resume audio context - critical for iOS/Android
+   * Both the raw Web Audio context AND Tone.js context must be resumed
+   */
   const resumeAudioContext = useCallback(async () => {
+    // Resume raw Web Audio API context
     if (audioContextRef.current && audioContextRef.current.state === 'suspended') {
-      await audioContextRef.current.resume();
+      try {
+        await audioContextRef.current.resume();
+        console.log('[AudioEngine] Raw AudioContext resumed');
+      } catch (e) {
+        console.warn('[AudioEngine] Failed to resume raw AudioContext:', e);
+      }
+    }
+    
+    // Also resume Tone.js context (critical for iOS)
+    if (useToneJsRef.current && toneInstrumentsReadyRef.current) {
+      try {
+        const Tone = await import('tone');
+        if (Tone.getContext().state !== 'running') {
+          await Tone.start();
+          console.log('[AudioEngine] Tone.js AudioContext resumed');
+        }
+        // Ensure transport is running
+        if (Tone.Transport.state !== 'started') {
+          Tone.Transport.start();
+        }
+      } catch (e) {
+        console.warn('[AudioEngine] Failed to resume Tone.js context:', e);
+      }
     }
   }, []);
 

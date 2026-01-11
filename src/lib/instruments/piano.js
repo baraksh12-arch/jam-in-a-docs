@@ -137,10 +137,22 @@ export async function initPiano() {
  * @param {number} time - Time in Tone.Transport time (seconds) or AudioContext time
  * @param {number} [velocity=100] - MIDI velocity (0-127), defaults to 100
  */
-export function triggerNote(note, time, velocity = 100) {
+export async function triggerNote(note, time, velocity = 100) {
   if (!isInitialized) {
     console.warn('[Piano] Not initialized, cannot trigger note');
     return;
+  }
+
+  // Ensure AudioContext is running (critical for iOS/Android)
+  const context = Tone.getContext();
+  if (context.state !== 'running') {
+    try {
+      await Tone.start();
+      console.log('[Piano] AudioContext resumed via Tone.start()');
+    } catch (e) {
+      console.warn('[Piano] Failed to resume AudioContext:', e);
+      return;
+    }
   }
 
   // Validate MIDI note range
