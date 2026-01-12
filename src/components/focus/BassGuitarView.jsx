@@ -27,7 +27,7 @@ const FRET_COUNT = 12;
 const FRET_MARKERS = [3, 5, 7, 9, 12];
 const DOUBLE_MARKERS = [12];
 
-export default function BassGuitarView({ onNoteOn, onNoteOff }) {
+export default function BassGuitarView({ onNoteOn, onNoteOff, viewOnly = false }) {
   const [activeNotes, setActiveNotes] = useState(new Map()); // stringIndex -> fret
   const [vibratingStrings, setVibratingStrings] = useState(new Set());
   const touchActiveRef = useRef(new Map()); // touchId -> { stringIndex, fret }
@@ -109,6 +109,7 @@ export default function BassGuitarView({ onNoteOn, onNoteOff }) {
 
   // Touch handlers
   const handleTouchStart = useCallback((e) => {
+    if (viewOnly) return;
     e.preventDefault();
     
     Array.from(e.changedTouches).forEach(touch => {
@@ -118,9 +119,10 @@ export default function BassGuitarView({ onNoteOn, onNoteOff }) {
         playNote(pos.stringIndex, pos.fret);
       }
     });
-  }, [getPositionFromCoords, playNote]);
+  }, [getPositionFromCoords, playNote, viewOnly]);
 
   const handleTouchMove = useCallback((e) => {
+    if (viewOnly) return;
     e.preventDefault();
     
     Array.from(e.changedTouches).forEach(touch => {
@@ -140,7 +142,7 @@ export default function BassGuitarView({ onNoteOn, onNoteOff }) {
         }
       }
     });
-  }, [getPositionFromCoords, playNote, releaseNote]);
+  }, [getPositionFromCoords, playNote, releaseNote, viewOnly]);
 
   const handleTouchEnd = useCallback((e) => {
     e.preventDefault();
@@ -156,6 +158,7 @@ export default function BassGuitarView({ onNoteOn, onNoteOff }) {
 
   // Mouse handlers for desktop - with drag support
   const handleMouseDown = useCallback((e) => {
+    if (viewOnly) return;
     e.preventDefault();
     isMouseDownRef.current = true;
     
@@ -164,10 +167,10 @@ export default function BassGuitarView({ onNoteOn, onNoteOff }) {
       mouseActiveRef.current = pos;
       playNote(pos.stringIndex, pos.fret);
     }
-  }, [getPositionFromCoords, playNote]);
+  }, [getPositionFromCoords, playNote, viewOnly]);
 
   const handleMouseMove = useCallback((e) => {
-    if (!isMouseDownRef.current) return;
+    if (viewOnly || !isMouseDownRef.current) return;
     
     const prevPos = mouseActiveRef.current;
     const newPos = getPositionFromCoords(e.clientX, e.clientY);
@@ -184,7 +187,7 @@ export default function BassGuitarView({ onNoteOn, onNoteOff }) {
         mouseActiveRef.current = newPos;
       }
     }
-  }, [getPositionFromCoords, playNote, releaseNote]);
+  }, [getPositionFromCoords, playNote, releaseNote, viewOnly]);
 
   const handleMouseUp = useCallback(() => {
     if (mouseActiveRef.current) {

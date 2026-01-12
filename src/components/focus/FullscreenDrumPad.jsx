@@ -453,13 +453,15 @@ const LiquidGlassPad = ({
  * FullscreenDrumPad - Liquid Glass Premium Experience
  * Features center-emanating light, translucent glass surfaces, and fluid animations
  */
-export default function FullscreenDrumPad({ onNoteOn, onNoteOff, focusModeActive = true }) {
+export default function FullscreenDrumPad({ onNoteOn, onNoteOff, focusModeActive = true, viewOnly = false }) {
   const [activePads, setActivePads] = useState(new Set());
   const [lightPulses, setLightPulses] = useState([]);
   const lastPressTimeRef = useRef({});
   const pulseIdRef = useRef(0);
 
   const handlePadTrigger = useCallback((padId, velocity, position) => {
+    if (viewOnly) return;
+    
     // Debounce rapid presses
     const now = Date.now();
     const lastPress = lastPressTimeRef.current[padId] || 0;
@@ -491,11 +493,11 @@ export default function FullscreenDrumPad({ onNoteOn, onNoteOff, focusModeActive
         return next;
       });
     }, 120);
-  }, [onNoteOn]);
+  }, [onNoteOn, viewOnly]);
 
   // Keyboard support
   useEffect(() => {
-    if (!focusModeActive) return;
+    if (!focusModeActive || viewOnly) return;
     
     const handleKeyDown = (e) => {
       if (e.repeat || e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
@@ -508,7 +510,7 @@ export default function FullscreenDrumPad({ onNoteOn, onNoteOff, focusModeActive
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handlePadTrigger, focusModeActive]);
+  }, [handlePadTrigger, focusModeActive, viewOnly]);
 
   return (
     <div 

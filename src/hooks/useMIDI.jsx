@@ -206,15 +206,20 @@ export function useMIDI({ onNoteOn, onNoteOff, onControlChange, enabled = true }
 
 /**
  * useMIDIInstrument - Higher-level hook for instrument-specific MIDI handling
+ * 
+ * Enhanced for guitar with pitch bend and modulation support
  */
 export function useMIDIInstrument({ 
   instrument, 
   audioEngine, 
   sendNote,
+  onPitchBend,
+  onModWheel,
   enabled = true 
 }) {
   const [midiEnabled, setMidiEnabled] = useState(true);
   const activeNotesRef = useRef(new Set());
+  const lastNoteRef = useRef(null);
 
   const handleNoteOn = useCallback((note, velocity, channel) => {
     if (!midiEnabled) return;
@@ -230,6 +235,7 @@ export function useMIDIInstrument({
     }
     
     activeNotesRef.current.add(note);
+    lastNoteRef.current = note;
     
     // Haptic feedback on mobile
     if (navigator.vibrate) {
@@ -251,18 +257,57 @@ export function useMIDIInstrument({
     }
     
     activeNotesRef.current.delete(note);
+    
+    // Clear last note if it was this one
+    if (lastNoteRef.current === note) {
+      lastNoteRef.current = null;
+    }
   }, [instrument, audioEngine, sendNote, midiEnabled]);
 
   const handleControlChange = useCallback((cc) => {
+    // Handle pitch bend - critical for guitar expression
+    if (cc.controller === 'pitchBend') {
+      // Convert -1 to 1 range to semitones (standard is ±2 semitones)
+      const bendSemitones = cc.value * 2;
+      
+      if (onPitchBend) {
+        onPitchBend(lastNoteRef.current, bendSemitones);
+      }
+      
+      // For guitar, apply bend directly
+      if (instrument === 'GUITAR') {
+        import('@/lib/instruments/guitar').then(guitar => {
+          guitar.bendNote(lastNoteRef.current, bendSemitones);
+        });
+      }
+      return;
+    }
+    
     // Handle sustain pedal
     if (cc.isSustain) {
-      // Could add sustain handling here
       console.log(`[MIDI] Sustain: ${cc.value > 63 ? 'ON' : 'OFF'}`);
     }
     
-    // Handle mod wheel for expression
+    // Handle mod wheel for vibrato (guitar) or expression
     if (cc.isModWheel) {
-      console.log(`[MIDI] Mod wheel: ${cc.value}`);
+      const normalizedMod = cc.value / 127;
+      
+      if (onModWheel) {
+        onModWheel(normalizedMod);
+      }
+      
+      // For guitar, mod wheel controls vibrato
+      if (instrument === 'GUITAR' && normalizedMod > 0.1) {
+        import('@/lib/instruments/guitar').then(guitar => {
+          const vibratoDepth = normalizedMod * 0.5; // 0 to 0.5 semitones
+          const vibratoRate = 4 + normalizedMod * 4; // 4 to 8 Hz
+          guitar.applyVibrato(lastNoteRef.current, vibratoDepth, vibratoRate);
+        });
+      } else if (instrument === 'GUITAR') {
+        import('@/lib/instruments/guitar').then(guitar => {
+          guitar.stopVibrato(lastNoteRef.current);
+        });
+      }
     }
     
     // Handle volume
@@ -270,7 +315,15 @@ export function useMIDIInstrument({
       const normalizedVolume = cc.value / 127;
       audioEngine.setInstrumentVolume(instrument, normalizedVolume);
     }
-  }, [instrument, audioEngine]);
+    
+    // Handle expression (CC11) - can be used for guitar tone
+    if (cc.isExpression && instrument === 'GUITAR') {
+      const normalizedExp = cc.value / 127;
+      import('@/lib/instruments/guitar').then(guitar => {
+        guitar.setTone(normalizedExp);
+      });
+    }
+  }, [instrument, audioEngine, onPitchBend, onModWheel]);
 
   const midi = useMIDI({
     onNoteOn: handleNoteOn,
@@ -285,12 +338,14 @@ export function useMIDIInstrument({
       handleNoteOff(note, 0);
     });
     activeNotesRef.current.clear();
+    lastNoteRef.current = null;
   }, [handleNoteOff]);
 
   return {
     ...midi,
     midiEnabled,
     setMidiEnabled,
-    panic
+    panic,
+    lastNote: lastNoteRef.current
   };
 }

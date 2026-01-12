@@ -10,14 +10,11 @@ import { useWebRTCCrowd } from '../components/hooks/useWebRTCCrowd';
 import { createRoom, joinRoomAsPlayer, joinRoomAsCrowd, getRoom, subscribeToCrowdMembers } from '../components/firebaseClient';
 import RoomTopBar from '../components/RoomTopBar';
 import InstrumentSlot from '../components/InstrumentSlot';
-import InstrumentGrid from '../components/InstrumentGrid';
-import ChatPanel from '../components/ChatPanel';
-import CrowdPanel from '../components/crowd/CrowdPanel';
 import CrowdViewer from '../components/crowd/CrowdViewer';
-import { FocusModeView, MobileFocusView } from '../components/focus';
+import { UnifiedFocusView } from '../components/focus';
 import AudioUnlock from '../components/audio/AudioUnlock';
 import { useMIDIInstrument } from '../hooks/useMIDI';
-import { Loader2, AlertCircle, Music, Wifi, WifiOff, Users, Volume2, Eye, Video, Expand } from 'lucide-react';
+import { AlertCircle, Music, Wifi, WifiOff, Users, Share2, Check } from 'lucide-react';
 import { useOrientation } from '../hooks/use-orientation';
 import { useIsMobile } from '../hooks/use-mobile';
 import { useToast } from '@/components/ui/use-toast';
@@ -87,10 +84,18 @@ export default function Room() {
   const { sendNote } = useNoteEvents(roomId, userId, audioEngine, peers, room, handleNoteActivity, webrtc);
 
   const [initializing, setInitializing] = useState(true);
-  const [showInstruments, setShowInstruments] = useState(false);
   const [focusMode, setFocusMode] = useState(false);
   const [audioUnlocked, setAudioUnlocked] = useState(false);
   const [showAudioUnlock, setShowAudioUnlock] = useState(false);
+  const [copied, setCopied] = useState(false);
+  
+  // Copy room link function for instrument selection page
+  const handleCopyLink = useCallback(() => {
+    const url = `${window.location.origin}${window.location.pathname}?id=${roomId}`;
+    navigator.clipboard.writeText(url);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }, [roomId]);
   
   // MIDI support for instrument
   const midi = useMIDIInstrument({
@@ -168,10 +173,6 @@ export default function Room() {
   }, [roomId, userId, displayName, color, userReady, isCrowdMode, joinWsRoom]);
 
   useEffect(() => {
-    setShowInstruments(!!currentPlayer?.instrument);
-  }, [currentPlayer]);
-
-  useEffect(() => {
     if (!room) return;
     if (room.isPlaying && room.metronomeOn) {
       audioEngine.startMetronome(room.bpm);
@@ -195,16 +196,13 @@ export default function Room() {
     console.log('[Room] Audio unlocked successfully');
   }, []);
 
-  // Auto-enter focus mode on mobile when instrument is selected
+  // Auto-enter focus mode when instrument is selected (both mobile AND desktop)
   useEffect(() => {
-    if (isMobile && currentPlayer?.instrument && audioUnlocked && !focusMode) {
-      // Small delay to ensure everything is ready
-      const timer = setTimeout(() => {
-        setFocusMode(true);
-      }, 300);
-      return () => clearTimeout(timer);
+    if (currentPlayer?.instrument && audioUnlocked && !focusMode) {
+      // Enter focus mode immediately
+      setFocusMode(true);
     }
-  }, [isMobile, currentPlayer?.instrument, audioUnlocked, focusMode]);
+  }, [currentPlayer?.instrument, audioUnlocked, focusMode]);
 
   // ESC key to exit focus mode
   useEffect(() => {
@@ -216,13 +214,6 @@ export default function Room() {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [focusMode]);
-
-  // Focus Mode handler - must be defined before any conditional returns
-  const handleEnterFocusMode = useCallback(() => {
-    if (currentPlayer?.instrument) {
-      setFocusMode(true);
-    }
-  }, [currentPlayer?.instrument]);
 
   // Premium loading screen component
   const LoadingScreen = ({ message, subMessage }) => (
@@ -437,53 +428,36 @@ export default function Room() {
     );
   }
 
+  // If focus mode is active, ONLY render the UnifiedFocusView (nothing else)
+  if (focusMode && currentPlayer?.instrument) {
+    return (
+      <UnifiedFocusView
+        instrument={currentPlayer.instrument}
+        player={currentPlayer}
+        audioEngine={audioEngine}
+        sendNote={sendNote}
+        onExit={() => setFocusMode(false)}
+        roomId={roomId}
+        userId={userId}
+        displayName={displayName}
+        color={color}
+        players={players}
+        crowdMembers={crowdMembers}
+        localStream={crowdWebRTC.localStream}
+        remoteStreams={crowdWebRTC.remoteStreams}
+        isBroadcasting={crowdWebRTC.isBroadcasting}
+        onStartBroadcast={crowdWebRTC.startBroadcast}
+        onStopBroadcast={crowdWebRTC.stopBroadcast}
+        cameraError={crowdWebRTC.cameraError}
+        isMobile={isMobile}
+        room={room}
+        roomControls={roomControls}
+      />
+    );
+  }
+
   return (
     <div className="min-h-screen bg-[#0a0a0f] relative">
-      {/* Focus Mode Overlay - Use MobileFocusView on mobile for premium experience */}
-      <AnimatePresence>
-        {focusMode && currentPlayer?.instrument && (
-          isMobile ? (
-            <MobileFocusView
-              instrument={currentPlayer.instrument}
-              player={currentPlayer}
-              audioEngine={audioEngine}
-              sendNote={sendNote}
-              onExit={() => setFocusMode(false)}
-              roomId={roomId}
-              userId={userId}
-              displayName={displayName}
-              color={color}
-              players={players}
-              crowdMembers={crowdMembers}
-              localStream={crowdWebRTC.localStream}
-              remoteStreams={crowdWebRTC.remoteStreams}
-              isBroadcasting={crowdWebRTC.isBroadcasting}
-              onStartBroadcast={crowdWebRTC.startBroadcast}
-              onStopBroadcast={crowdWebRTC.stopBroadcast}
-              cameraError={crowdWebRTC.cameraError}
-            />
-          ) : (
-            <FocusModeView
-              instrument={currentPlayer.instrument}
-              player={currentPlayer}
-              audioEngine={audioEngine}
-              sendNote={sendNote}
-              onExit={() => setFocusMode(false)}
-              roomId={roomId}
-              userId={userId}
-              displayName={displayName}
-              crowdMembers={crowdMembers}
-              localStream={crowdWebRTC.localStream}
-              remoteStreams={crowdWebRTC.remoteStreams}
-              isBroadcasting={crowdWebRTC.isBroadcasting}
-              onStartBroadcast={crowdWebRTC.startBroadcast}
-              onStopBroadcast={crowdWebRTC.stopBroadcast}
-              isMobile={isMobile}
-            />
-          )
-        )}
-      </AnimatePresence>
-
       {/* Subtle background gradient */}
       <div className="absolute inset-0 overflow-hidden pointer-events-none">
         <div className="absolute top-[-20%] left-[-10%] w-[500px] h-[500px] bg-purple-600/10 rounded-full blur-[120px]" />
@@ -491,35 +465,28 @@ export default function Room() {
       </div>
 
       <div className="relative z-10">
-        <RoomTopBar 
-          room={room}
-          roomId={roomId}
-          playerCount={players.length}
-          crowdCount={crowdMembers.length}
-          wsConnected={wsConnected}
-          onEnterFocusMode={handleEnterFocusMode}
-          canEnterFocusMode={!!currentPlayer?.instrument}
-          {...roomControls}
-        />
-
-        {/* Connection status bar - mobile only shows connection indicator */}
-        <div className="container mx-auto px-4 py-2 flex items-center justify-between sm:hidden">
-          <div className="flex items-center gap-4">
-            <ConnectionIndicator />
-          </div>
-        </div>
-
         <div className="container mx-auto px-4 py-4 pb-safe">
+          {/* Instrument Selection Page - shown when no instrument is selected */}
           <AnimatePresence mode="wait">
-            {!showInstruments ? (
+            {!currentPlayer?.instrument && (
               <motion.div 
                 key="instrument-selection"
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -20 }}
-                className="max-w-6xl mx-auto"
+                className="max-w-3xl mx-auto min-h-screen flex flex-col justify-center py-8"
               >
+                {/* Header with Title */}
                 <div className="text-center mb-8">
+                  <motion.div 
+                    initial={{ opacity: 0, scale: 0.9 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    className="flex items-center justify-center gap-3 mb-4"
+                  >
+                    <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-violet-500 to-fuchsia-500 flex items-center justify-center shadow-lg shadow-violet-500/30">
+                      <Music className="w-6 h-6 text-white" />
+                    </div>
+                  </motion.div>
                   <motion.h2 
                     initial={{ opacity: 0, y: 20 }}
                     animate={{ opacity: 1, y: 0 }}
@@ -537,7 +504,8 @@ export default function Room() {
                   </motion.p>
                 </div>
 
-                <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 md:gap-4">
+                {/* Instrument Grid */}
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 md:gap-4 mb-8">
                   {['DRUMS', 'BASS', 'EP', 'GUITAR'].map((inst, i) => (
                     <motion.div
                       key={inst}
@@ -557,106 +525,99 @@ export default function Room() {
                   ))}
                 </div>
 
-                {/* Players list */}
+                {/* Ready Status & Share Row - Combined in one clean row */}
+                <motion.div 
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.3 }}
+                  className="flex flex-col sm:flex-row items-center justify-center gap-4 sm:gap-6 mb-8"
+                >
+                  {/* Ready indicator */}
+                  <div className="flex items-center gap-3 px-6 py-3 bg-white/5 backdrop-blur-sm rounded-2xl border border-white/10">
+                    <motion.div 
+                      animate={{ scale: [1, 1.2, 1], opacity: [1, 0.6, 1] }}
+                      transition={{ duration: 2, repeat: Infinity }}
+                      className="w-3 h-3 bg-emerald-400 rounded-full shadow-lg shadow-emerald-400/50"
+                    />
+                    <span className="text-white font-semibold">Ready to Play</span>
+                  </div>
+
+                  {/* Room code & Share button */}
+                  <div className="flex items-center gap-3 px-4 py-3 bg-white/5 backdrop-blur-sm rounded-2xl border border-white/10">
+                    <div className="flex flex-col">
+                      <span className="text-white/50 text-xs uppercase tracking-wider">Room</span>
+                      <span className="text-white font-mono font-bold text-lg">{roomId?.toUpperCase()}</span>
+                    </div>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={handleCopyLink}
+                      className={`
+                        relative overflow-hidden rounded-xl px-4 py-2 text-sm font-medium transition-all duration-300
+                        ${copied 
+                          ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' 
+                          : 'bg-white/10 text-white border border-white/20 hover:bg-white/20'
+                        }
+                      `}
+                    >
+                      {copied ? (
+                        <>
+                          <Check className="w-4 h-4 mr-2" />
+                          Copied!
+                        </>
+                      ) : (
+                        <>
+                          <Share2 className="w-4 h-4 mr-2" />
+                          Share
+                        </>
+                      )}
+                    </Button>
+                  </div>
+                </motion.div>
+
+                {/* Compact Players list */}
                 <motion.div 
                   initial={{ opacity: 0, y: 20 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ delay: 0.4 }}
-                  className="mt-8 bg-white/5 backdrop-blur-sm rounded-xl p-6 border border-white/10"
+                  className="bg-white/5 backdrop-blur-sm rounded-2xl p-4 border border-white/10"
                 >
-                  <div className="flex items-center gap-2 mb-4">
-                    <Users className="w-5 h-5 text-purple-400" />
-                    <h3 className="text-lg font-semibold text-white">Players in Room</h3>
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-2">
+                      <Users className="w-4 h-4 text-purple-400" />
+                      <h3 className="text-sm font-semibold text-white">Players ({players.length})</h3>
+                    </div>
+                    <ConnectionIndicator />
                   </div>
                   
                   {players.length === 0 ? (
-                    <div className="text-center py-6">
+                    <div className="text-center py-4">
                       <div className="text-gray-500 text-sm">Waiting for players to join...</div>
-                      <div className="text-gray-600 text-xs mt-2">Share the room code to invite friends</div>
                     </div>
                   ) : (
-                    <div className="grid gap-2 sm:grid-cols-2">
+                    <div className="flex flex-wrap gap-2">
                       {players.map(player => (
                         <motion.div 
                           key={player.id}
-                          initial={{ opacity: 0, x: -10 }}
-                          animate={{ opacity: 1, x: 0 }}
-                          className="flex items-center gap-3 bg-white/5 rounded-lg p-3"
+                          initial={{ opacity: 0, scale: 0.9 }}
+                          animate={{ opacity: 1, scale: 1 }}
+                          className="flex items-center gap-2 bg-white/5 rounded-full px-3 py-1.5"
                         >
                           <div
-                            className="w-8 h-8 rounded-full flex items-center justify-center text-white font-bold text-sm"
+                            className="w-6 h-6 rounded-full flex items-center justify-center text-white font-bold text-xs"
                             style={{ backgroundColor: player.color }}
                           >
                             {player.displayName?.[0]?.toUpperCase() || '?'}
                           </div>
-                          <div className="flex-1 min-w-0">
-                            <div className="text-white font-medium text-sm truncate">{player.displayName}</div>
-                            {player.instrument ? (
-                              <div className="text-purple-400 text-xs">{player.instrument}</div>
-                            ) : (
-                              <div className="text-gray-500 text-xs">Choosing...</div>
-                            )}
-                          </div>
+                          <span className="text-white text-sm font-medium">{player.displayName}</span>
+                          {player.instrument && (
+                            <span className="text-purple-400 text-xs">• {player.instrument}</span>
+                          )}
                         </motion.div>
                       ))}
                     </div>
                   )}
                 </motion.div>
-              </motion.div>
-            ) : (
-              <motion.div 
-                key="instruments"
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -20 }}
-                className={`
-                  ${isMobile && isPortrait 
-                    ? 'flex flex-col gap-4' 
-                    : 'grid lg:grid-cols-4 gap-4 sm:gap-6'
-                  }
-                `}
-              >
-                <div className={isMobile && isPortrait ? 'order-1' : 'lg:col-span-3 order-1'}>
-                  <InstrumentGrid
-                    players={players}
-                    currentPlayer={currentPlayer}
-                    audioEngine={audioEngine}
-                    sendNote={sendNote}
-                    room={room}
-                    activityTriggersRef={activityTriggersRef}
-                    focusModeActive={focusMode}
-                  />
-                </div>
-
-                <div className={isMobile && isPortrait ? 'order-2' : 'lg:col-span-1 order-2 lg:order-2'}>
-                  <div className="space-y-4">
-                    <ChatPanel
-                      roomId={roomId}
-                      userId={userId}
-                      displayName={displayName}
-                      isMobile={isMobile}
-                      isPortrait={isPortrait}
-                    />
-                    
-                    {/* Crowd Panel - shows all crowd members' video feeds */}
-                    <CrowdPanel
-                      roomId={roomId}
-                      userId={userId}
-                      displayName={displayName}
-                      color={color}
-                      isCrowd={isCrowdMode}
-                      crowdMembers={crowdMembers}
-                      localStream={crowdWebRTC.localStream}
-                      remoteStreams={crowdWebRTC.remoteStreams}
-                      isBroadcasting={crowdWebRTC.isBroadcasting}
-                      cameraError={crowdWebRTC.cameraError}
-                      onStartBroadcast={crowdWebRTC.startBroadcast}
-                      onStopBroadcast={crowdWebRTC.stopBroadcast}
-                      isMobile={isMobile}
-                      isPortrait={isPortrait}
-                    />
-                  </div>
-                </div>
               </motion.div>
             )}
           </AnimatePresence>

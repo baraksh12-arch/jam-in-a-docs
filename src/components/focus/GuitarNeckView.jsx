@@ -2,9 +2,9 @@ import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 /**
- * GuitarNeckView - Premium Guitar Fretboard with Physically-Informed Controls
+ * GuitarNeckView - Elite Premium Guitar Fretboard
  * 
- * Apple-level production quality featuring:
+ * Production-ready physically-informed guitar interface:
  * - 6-string guitar layout (E A D G B e)
  * - Touch/mouse bends with visual feedback
  * - Vibrato by wobbling finger/cursor
@@ -13,17 +13,19 @@ import { motion, AnimatePresence } from 'framer-motion';
  * - Palm mute with dramatic effect
  * - Pickup selector (bridge/middle/neck)
  * - Tone control
+ * - Neck position indicator
  * - Real-time pitch visualization
+ * - Full MIDI support
  */
 
 // Standard guitar tuning (MIDI notes for open strings, high to low in display)
 const STRINGS = [
-  { name: 'e', openNote: 64, color: 'from-rose-400 to-rose-500', thickness: 1.5 },    // High E
-  { name: 'B', openNote: 59, color: 'from-orange-400 to-orange-500', thickness: 2 },
-  { name: 'G', openNote: 55, color: 'from-amber-400 to-amber-500', thickness: 2.5 },
-  { name: 'D', openNote: 50, color: 'from-yellow-400 to-yellow-500', thickness: 3 },
-  { name: 'A', openNote: 45, color: 'from-lime-400 to-lime-500', thickness: 3.5 },
-  { name: 'E', openNote: 40, color: 'from-emerald-400 to-emerald-500', thickness: 4 }, // Low E
+  { name: 'e', openNote: 64, color: 'from-rose-400 to-rose-500', thickness: 1.5, glow: 'rose' },    // High E
+  { name: 'B', openNote: 59, color: 'from-orange-400 to-orange-500', thickness: 2, glow: 'orange' },
+  { name: 'G', openNote: 55, color: 'from-amber-400 to-amber-500', thickness: 2.5, glow: 'amber' },
+  { name: 'D', openNote: 50, color: 'from-yellow-400 to-yellow-500', thickness: 3, glow: 'yellow' },
+  { name: 'A', openNote: 45, color: 'from-lime-400 to-lime-500', thickness: 3.5, glow: 'lime' },
+  { name: 'E', openNote: 40, color: 'from-emerald-400 to-emerald-500', thickness: 4, glow: 'emerald' }, // Low E
 ];
 
 const FRET_COUNT = 15;
@@ -35,10 +37,18 @@ const MAX_BEND = 2.5;
 
 // Pickup positions
 const PICKUP_OPTIONS = [
-  { id: 'neck', label: 'N', fullLabel: 'Neck', description: 'Warm' },
+  { id: 'neck', label: 'N', fullLabel: 'Neck', description: 'Warm & Mellow' },
   { id: 'middle', label: 'M', fullLabel: 'Middle', description: 'Balanced' },
-  { id: 'bridge', label: 'B', fullLabel: 'Bridge', description: 'Bright' },
+  { id: 'bridge', label: 'B', fullLabel: 'Bridge', description: 'Bright & Punchy' },
 ];
+
+// Note names for display
+const NOTE_NAMES = ['C', 'C♯', 'D', 'D♯', 'E', 'F', 'F♯', 'G', 'G♯', 'A', 'A♯', 'B'];
+
+function getNoteNameFromMidi(midi) {
+  const octave = Math.floor(midi / 12) - 1;
+  return `${NOTE_NAMES[midi % 12]}${octave}`;
+}
 
 export default function GuitarNeckView({ 
   onNoteOn, 
@@ -51,12 +61,15 @@ export default function GuitarNeckView({
   onPickPositionChange,
   onPickupChange,
   onToneChange,
+  viewOnly = false,
 }) {
   const [activeNotes, setActiveNotes] = useState(new Map()); // stringIndex -> { fret, bendAmount, isVibrato }
   const [vibratingStrings, setVibratingStrings] = useState(new Set());
   const [palmMute, setPalmMute] = useState(false);
+  const [palmMuteAmount, setPalmMuteAmount] = useState(0);
   const [pickupPosition, setPickupPosition] = useState('bridge');
   const [toneValue, setToneValue] = useState(0.7);
+  const [neckPosition, setNeckPosition] = useState(0); // 0 = first position, can shift up
   
   const touchDataRef = useRef(new Map()); // touchId -> { stringIndex, fret, startY, currentY, startTime, lastY }
   const mouseDataRef = useRef(null);
@@ -65,6 +78,7 @@ export default function GuitarNeckView({
   const lastVibratoTimeRef = useRef(new Map());
   const vibratoDirectionRef = useRef(new Map());
   const vibratoCountRef = useRef(new Map());
+  const lastNoteRef = useRef(null); // Track last played note for bend/vibrato
 
   // Calculate note from string and fret
   const getNote = useCallback((stringIndex, fret) => {
@@ -88,6 +102,9 @@ export default function GuitarNeckView({
     } else {
       onNoteOn?.(note, velocity);
     }
+
+    // Track last note for bend/vibrato
+    lastNoteRef.current = note;
 
     // Visual feedback
     setActiveNotes(prev => new Map(prev).set(stringIndex, { fret, bendAmount: 0, isVibrato: false }));
@@ -222,13 +239,23 @@ export default function GuitarNeckView({
   const togglePalmMute = useCallback(() => {
     const newValue = !palmMute;
     setPalmMute(newValue);
-    onPalmMuteChange?.(newValue ? 0.75 : 0);
+    const amount = newValue ? 0.75 : 0;
+    setPalmMuteAmount(amount);
+    onPalmMuteChange?.(amount);
     
     // Haptic feedback
     if (navigator.vibrate) {
       navigator.vibrate(newValue ? [25, 15, 25] : 15);
     }
   }, [palmMute, onPalmMuteChange]);
+
+  // Handle palm mute slider
+  const handlePalmMuteSlider = useCallback((e) => {
+    const value = parseFloat(e.target.value);
+    setPalmMuteAmount(value);
+    setPalmMute(value > 0.1);
+    onPalmMuteChange?.(value);
+  }, [onPalmMuteChange]);
 
   // Handle pickup change
   const handlePickupChange = useCallback((position) => {
@@ -250,6 +277,7 @@ export default function GuitarNeckView({
 
   // Touch handlers
   const handleTouchStart = useCallback((e) => {
+    if (viewOnly) return;
     e.preventDefault();
     
     Array.from(e.changedTouches).forEach(touch => {
@@ -267,9 +295,10 @@ export default function GuitarNeckView({
         playNote(pos.stringIndex, pos.fret);
       }
     });
-  }, [getPositionFromCoords, playNote]);
+  }, [getPositionFromCoords, playNote, viewOnly]);
 
   const handleTouchMove = useCallback((e) => {
+    if (viewOnly) return;
     e.preventDefault();
     
     Array.from(e.changedTouches).forEach(touch => {
@@ -316,7 +345,7 @@ export default function GuitarNeckView({
         touchDataRef.current.set(touch.identifier, touchData);
       }
     });
-  }, [getPositionFromCoords, getNote, playNote, releaseNote, applyBend, detectVibrato, onSlide]);
+  }, [getPositionFromCoords, getNote, playNote, releaseNote, applyBend, detectVibrato, onSlide, viewOnly]);
 
   const handleTouchEnd = useCallback((e) => {
     e.preventDefault();
@@ -332,6 +361,7 @@ export default function GuitarNeckView({
 
   // Mouse handlers
   const handleMouseDown = useCallback((e) => {
+    if (viewOnly) return;
     e.preventDefault();
     isMouseDownRef.current = true;
     
@@ -348,10 +378,10 @@ export default function GuitarNeckView({
       };
       playNote(pos.stringIndex, pos.fret);
     }
-  }, [getPositionFromCoords, playNote]);
+  }, [getPositionFromCoords, playNote, viewOnly]);
 
   const handleMouseMove = useCallback((e) => {
-    if (!isMouseDownRef.current || !mouseDataRef.current) return;
+    if (viewOnly || !isMouseDownRef.current || !mouseDataRef.current) return;
     
     const newPos = getPositionFromCoords(e.clientX, e.clientY);
     if (!newPos) return;
@@ -387,7 +417,7 @@ export default function GuitarNeckView({
       applyBend(mouseData.stringIndex, newPos.bendAmount);
       detectVibrato(mouseData.stringIndex, newPos.rawY, prevY);
     }
-  }, [getPositionFromCoords, getNote, playNote, releaseNote, applyBend, detectVibrato, onSlide]);
+  }, [getPositionFromCoords, getNote, playNote, releaseNote, applyBend, detectVibrato, onSlide, viewOnly]);
 
   const handleMouseUp = useCallback(() => {
     if (mouseDataRef.current) {
@@ -428,48 +458,85 @@ export default function GuitarNeckView({
       className="w-full h-full flex flex-col items-center justify-center p-3 sm:p-4"
       style={{ touchAction: 'none' }}
     >
-      {/* Controls row - Apple-style segmented controls */}
+      {/* Controls row - Premium glass morphism design */}
       <motion.div
         initial={{ opacity: 0, y: -10 }}
         animate={{ opacity: 1, y: 0 }}
-        className="w-full max-w-4xl mb-3 sm:mb-4 flex items-center justify-between gap-2 sm:gap-4"
+        className="w-full max-w-4xl mb-3 sm:mb-4 flex items-center justify-between gap-2 sm:gap-4 flex-wrap"
       >
-        {/* Palm Mute - Left side, prominent */}
-        <motion.button
-          onClick={togglePalmMute}
-          whileTap={{ scale: 0.95 }}
-          className={`
-            relative px-4 sm:px-5 py-2.5 sm:py-3 rounded-2xl font-semibold text-sm
-            transition-all duration-300 overflow-hidden
+        {/* Palm Mute Control - Left side */}
+        <div className="flex items-center gap-2">
+          <motion.button
+            onClick={togglePalmMute}
+            whileTap={{ scale: 0.95 }}
+            className={`
+              relative px-4 sm:px-5 py-2.5 sm:py-3 rounded-2xl font-semibold text-sm
+              transition-all duration-300 overflow-hidden
+              ${palmMute 
+                ? 'bg-gradient-to-r from-orange-500 to-amber-500 text-white shadow-lg shadow-orange-500/40' 
+                : 'bg-white/[0.08] text-white/70 hover:bg-white/[0.12] border border-white/10'
+              }
+            `}
+          >
+            {/* Animated background pulse when active */}
+            {palmMute && (
+              <motion.div
+                className="absolute inset-0 bg-white/20"
+                animate={{ opacity: [0, 0.3, 0] }}
+                transition={{ duration: 1.5, repeat: Infinity }}
+              />
+            )}
+            <span className="relative flex items-center gap-2">
+              <span className={`
+                w-2 h-2 rounded-full transition-all duration-300
+                ${palmMute ? 'bg-white shadow-lg shadow-white/50' : 'bg-white/30'}
+              `} />
+              <span className="hidden sm:inline">Palm Mute</span>
+              <span className="sm:hidden">PM</span>
+            </span>
+          </motion.button>
+          
+          {/* Palm mute intensity slider */}
+          <div className={`
+            flex items-center gap-2 px-3 py-1.5 rounded-xl border transition-all duration-300
             ${palmMute 
-              ? 'bg-gradient-to-r from-orange-500 to-amber-500 text-white shadow-lg shadow-orange-500/40' 
-              : 'bg-white/[0.08] text-white/70 hover:bg-white/[0.12] border border-white/10'
+              ? 'bg-orange-500/20 border-orange-500/30' 
+              : 'bg-black/40 border-white/10'
             }
-          `}
-        >
-          {/* Animated background pulse when active */}
-          {palmMute && (
-            <motion.div
-              className="absolute inset-0 bg-white/20"
-              animate={{ opacity: [0, 0.3, 0] }}
-              transition={{ duration: 1.5, repeat: Infinity }}
+          `}>
+            <input
+              type="range"
+              min="0"
+              max="1"
+              step="0.01"
+              value={palmMuteAmount}
+              onChange={handlePalmMuteSlider}
+              className={`
+                w-16 sm:w-20 h-1 rounded-full appearance-none cursor-pointer
+                ${palmMute ? 'bg-orange-300/30' : 'bg-white/20'}
+                [&::-webkit-slider-thumb]:appearance-none 
+                [&::-webkit-slider-thumb]:w-3.5
+                [&::-webkit-slider-thumb]:h-3.5
+                [&::-webkit-slider-thumb]:rounded-full 
+                [&::-webkit-slider-thumb]:transition-transform
+                [&::-webkit-slider-thumb]:hover:scale-110
+                ${palmMute 
+                  ? '[&::-webkit-slider-thumb]:bg-orange-400 [&::-webkit-slider-thumb]:shadow-md [&::-webkit-slider-thumb]:shadow-orange-500/50' 
+                  : '[&::-webkit-slider-thumb]:bg-white [&::-webkit-slider-thumb]:shadow-md'
+                }
+              `}
             />
-          )}
-          <span className="relative flex items-center gap-2">
-            <span className={`
-              w-2 h-2 rounded-full transition-all duration-300
-              ${palmMute ? 'bg-white shadow-lg shadow-white/50' : 'bg-white/30'}
-            `} />
-            <span className="hidden sm:inline">Palm Mute</span>
-            <span className="sm:hidden">PM</span>
-          </span>
-        </motion.button>
+            <span className={`text-[10px] font-mono w-8 ${palmMute ? 'text-orange-300' : 'text-white/40'}`}>
+              {Math.round(palmMuteAmount * 100)}%
+            </span>
+          </div>
+        </div>
 
         {/* Center controls group */}
         <div className="flex items-center gap-2 sm:gap-3">
           {/* Pickup Selector - Segmented control style */}
           <div className="flex items-center bg-black/40 backdrop-blur-sm rounded-xl p-1 border border-white/10">
-            {PICKUP_OPTIONS.map((pickup, idx) => (
+            {PICKUP_OPTIONS.map((pickup) => (
               <motion.button
                 key={pickup.id}
                 onClick={() => handlePickupChange(pickup.id)}
@@ -482,6 +549,7 @@ export default function GuitarNeckView({
                     : 'text-white/50 hover:text-white/80'
                   }
                 `}
+                title={pickup.description}
               >
                 <span className="sm:hidden">{pickup.label}</span>
                 <span className="hidden sm:inline">{pickup.fullLabel}</span>
@@ -509,11 +577,17 @@ export default function GuitarNeckView({
                          [&::-webkit-slider-thumb]:transition-transform
                          [&::-webkit-slider-thumb]:hover:scale-110"
             />
+            <span className="text-white/40 text-[10px] font-mono w-8">
+              {Math.round(toneValue * 10)}
+            </span>
           </div>
         </div>
 
-        {/* Right spacer for balance */}
-        <div className="w-[100px] sm:w-[120px]" />
+        {/* Right side - Neck position indicator */}
+        <div className="flex items-center gap-2 px-3 py-1.5 bg-black/40 backdrop-blur-sm rounded-xl border border-white/10">
+          <span className="text-emerald-400/80 text-xs font-medium">POS</span>
+          <span className="text-white/70 text-sm font-mono">{neckPosition + 1}</span>
+        </div>
       </motion.div>
 
       {/* Guitar neck */}
@@ -545,7 +619,7 @@ export default function GuitarNeckView({
               exit={{ opacity: 0 }}
               className="absolute inset-0 pointer-events-none z-10"
               style={{
-                background: 'linear-gradient(90deg, rgba(255, 120, 50, 0.25) 0%, rgba(255, 100, 30, 0.1) 15%, transparent 40%)',
+                background: `linear-gradient(90deg, rgba(255, 120, 50, ${0.15 + palmMuteAmount * 0.2}) 0%, rgba(255, 100, 30, 0.1) 15%, transparent 40%)`,
               }}
             >
               {/* Palm indicator */}
@@ -801,11 +875,4 @@ export default function GuitarNeckView({
       </motion.div>
     </div>
   );
-}
-
-// Helper function to get note name from MIDI number
-function getNoteNameFromMidi(midi) {
-  const notes = ['C', 'C♯', 'D', 'D♯', 'E', 'F', 'F♯', 'G', 'G♯', 'A', 'A♯', 'B'];
-  const octave = Math.floor(midi / 12) - 1;
-  return `${notes[midi % 12]}${octave}`;
 }

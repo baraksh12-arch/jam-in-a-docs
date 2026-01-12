@@ -1,7 +1,9 @@
 export { default as FocusModeView } from './FocusModeView';
 export { default as MobileFocusView } from './MobileFocusView';
+export { default as UnifiedFocusView } from './UnifiedFocusView';
 export { default as FullscreenDrumPad } from './FullscreenDrumPad';
 export { default as FullscreenKeyboard } from './FullscreenKeyboard';
+export { default as PianoWithPadsView } from './PianoWithPadsView';
 export { default as DrumSetView } from './DrumSetView';
 export { default as ChordPadView } from './ChordPadView';
 export { default as BassGuitarView } from './BassGuitarView';

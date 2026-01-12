@@ -10,25 +10,19 @@ import {
   VideoOff,
   Users,
   MessageCircle,
-  LayoutGrid,
   Music,
-  Disc,
-  Zap,
-  Guitar,
-  Piano,
-  ChevronUp,
-  ChevronDown,
   Share2,
   Copy,
-  Check
+  Check,
+  Eye,
+  ChevronUp,
+  ChevronDown
 } from 'lucide-react';
 import { Slider } from '@/components/ui/slider';
 import FullscreenDrumPad from './FullscreenDrumPad';
-import DrumSetView from './DrumSetView';
-import FullscreenKeyboard from './FullscreenKeyboard';
-import ChordPadView from './ChordPadView';
 import BassGuitarView from './BassGuitarView';
 import GuitarNeckView from './GuitarNeckView';
+import PianoWithPadsView from './PianoWithPadsView';
 import BandMemberIndicators from './BandMemberIndicators';
 import CameraStrip from './CameraStrip';
 import CompactChatBar from './CompactChatBar';
@@ -44,67 +38,52 @@ import {
 } from '@/lib/instruments/guitar';
 
 /**
- * MobileFocusView - Premium Mobile Instrument Experience
+ * UnifiedFocusView - Premium Unified Instrument Experience
  * 
- * Apple-tier VST-quality interface with:
- * - Dual modes per instrument (Pads vs Realistic Views)
- * - Guitar neck with bends, slides, vibrato, hammer-ons
- * - Premium drum set with realistic visuals
- * - Real-time camera feeds with toggle
- * - Share/copy room code functionality
- * - Logo-based exit with confirmation
+ * Features:
+ * - Single mode per instrument (no mode switching)
+ * - 4 instrument tabs with all musicians visible
+ * - Click on player to watch their live display
+ * - Settings wheel for all controls
+ * - Works on both mobile and desktop
  */
 
-// Instrument mode configurations
-const INSTRUMENT_MODES = {
-  DRUMS: [
-    { id: 'pad', label: 'Drum Pad', icon: LayoutGrid, description: '8-pad MPC style' },
-    { id: 'kit', label: 'Drum Set', icon: Disc, description: 'Visual drum kit' }
-  ],
-  EP: [
-    { id: 'keyboard', label: 'Keyboard', icon: Piano, description: 'Piano keys' },
-    { id: 'chordpad', label: 'Chord Pad', icon: LayoutGrid, description: 'One-touch chords' }
-  ],
-  BASS: [
-    { id: 'keyboard', label: 'Bass Keys', icon: Piano, description: 'Keyboard layout' },
-    { id: 'fretboard', label: 'Bass Guitar', icon: Guitar, description: 'String slide' }
-  ],
-  GUITAR: [
-    { id: 'keyboard', label: 'Guitar Keys', icon: Piano, description: 'Keyboard layout' },
-    { id: 'fretboard', label: 'Guitar Neck', icon: Guitar, description: 'Bends & slides' }
-  ]
-};
-
-const INSTRUMENT_THEMES = {
+const INSTRUMENT_CONFIG = {
   DRUMS: {
     name: 'Drums',
-    gradient: 'from-rose-500/30 via-orange-500/20 to-amber-500/10',
-    accent: 'rose',
     icon: '🥁',
-    color: '#f43f5e'
+    gradient: 'from-rose-500/30 via-orange-500/20 to-amber-500/10',
+    accentColor: '#f43f5e',
+    bgColor: 'bg-rose-500/10',
+    borderColor: 'border-rose-500/30',
   },
   BASS: {
     name: 'Bass',
-    gradient: 'from-cyan-500/30 via-blue-500/20 to-indigo-500/10',
-    accent: 'cyan',
     icon: '🎸',
-    color: '#06b6d4'
+    gradient: 'from-cyan-500/30 via-blue-500/20 to-indigo-500/10',
+    accentColor: '#06b6d4',
+    bgColor: 'bg-cyan-500/10',
+    borderColor: 'border-cyan-500/30',
   },
   EP: {
     name: 'Piano',
-    gradient: 'from-violet-500/30 via-purple-500/20 to-fuchsia-500/10',
-    accent: 'violet',
     icon: '🎹',
-    color: '#8b5cf6'
+    gradient: 'from-violet-500/30 via-purple-500/20 to-fuchsia-500/10',
+    accentColor: '#8b5cf6',
+    bgColor: 'bg-violet-500/10',
+    borderColor: 'border-violet-500/30',
   },
   GUITAR: {
     name: 'Guitar',
-    gradient: 'from-emerald-500/30 via-green-500/20 to-teal-500/10',
-    accent: 'emerald',
     icon: '🎸',
-    color: '#10b981'
+    gradient: 'from-emerald-500/30 via-green-500/20 to-teal-500/10',
+    accentColor: '#10b981',
+    bgColor: 'bg-emerald-500/10',
+    borderColor: 'border-emerald-500/30',
   }
 };
+
+const INSTRUMENT_ORDER = ['DRUMS', 'BASS', 'GUITAR', 'EP'];
 
 // Exit confirmation dialog
 const ExitDialog = ({ isOpen, onConfirm, onCancel }) => (
@@ -149,6 +128,47 @@ const ExitDialog = ({ isOpen, onConfirm, onCancel }) => (
             </button>
           </div>
         </motion.div>
+      </motion.div>
+    )}
+  </AnimatePresence>
+);
+
+// Settings Panel
+const SettingsPanel = ({ isOpen, onClose, volume, onVolumeChange, isMuted, onToggleMute }) => (
+  <AnimatePresence>
+    {isOpen && (
+      <motion.div
+        initial={{ opacity: 0, scale: 0.9, y: 10 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.9, y: 10 }}
+        className="absolute bottom-full right-0 mb-2 w-72 bg-[#1a1a24]/95 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl overflow-hidden z-50"
+      >
+        <div className="p-4 border-b border-white/10">
+          <h3 className="text-white font-semibold text-sm">Settings</h3>
+        </div>
+        <div className="p-4 space-y-4">
+          {/* Volume Control */}
+          <div>
+            <label className="text-white/60 text-xs uppercase tracking-wider mb-2 block">Volume</label>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={onToggleMute}
+                className={`p-2 rounded-lg transition-colors ${
+                  isMuted ? 'bg-red-500/20 text-red-400' : 'bg-white/10 text-white/70 hover:text-white'
+                }`}
+              >
+                {isMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+              </button>
+              <Slider
+                value={[isMuted ? 0 : volume]}
+                onValueChange={onVolumeChange}
+                max={1}
+                step={0.01}
+                className="flex-1"
+              />
+            </div>
+          </div>
+        </div>
       </motion.div>
     )}
   </AnimatePresence>
@@ -218,7 +238,7 @@ const ShareMenu = ({ isOpen, roomId, onClose }) => {
   );
 };
 
-export default function MobileFocusView({
+export default function UnifiedFocusView({
   instrument,
   player,
   audioEngine,
@@ -231,6 +251,8 @@ export default function MobileFocusView({
   color,
   players = [],
   crowdMembers = [],
+  room,
+  roomControls,
   // Camera props
   localStream,
   remoteStreams = {},
@@ -238,10 +260,13 @@ export default function MobileFocusView({
   onStartBroadcast,
   onStopBroadcast,
   cameraError,
+  // Mobile props
+  isMobile = false,
   // Note events for activity indicators
   noteEvents = {}
 }) {
-  const [currentMode, setCurrentMode] = useState(INSTRUMENT_MODES[instrument]?.[0]?.id || 'pad');
+  const [selectedTab, setSelectedTab] = useState(instrument);
+  const [watchingPlayer, setWatchingPlayer] = useState(null); // Player we're watching
   const [showChat, setShowChat] = useState(false);
   const [chatExpanded, setChatExpanded] = useState(false);
   const [showCameras, setShowCameras] = useState(false);
@@ -252,97 +277,77 @@ export default function MobileFocusView({
   const [volume, setVolume] = useState(0.8);
   const [isMuted, setIsMuted] = useState(false);
 
-  const theme = INSTRUMENT_THEMES[instrument] || INSTRUMENT_THEMES.DRUMS;
-  const modes = INSTRUMENT_MODES[instrument] || INSTRUMENT_MODES.DRUMS;
+  const config = INSTRUMENT_CONFIG[selectedTab] || INSTRUMENT_CONFIG.DRUMS;
 
-  // Ensure audio context is resumed (critical for iOS/Android)
+  // Get players for each instrument
+  const getPlayerForInstrument = (inst) => {
+    return players.find(p => p.instrument === inst);
+  };
+
+  // Ensure audio context is resumed
   const ensureAudioContext = useCallback(async () => {
     try {
       const Tone = await import('tone');
       if (Tone.getContext().state !== 'running') {
         await Tone.start();
-        console.log('[MobileFocusView] AudioContext resumed');
+        console.log('[UnifiedFocusView] AudioContext resumed');
       }
     } catch (e) {
-      console.warn('[MobileFocusView] Failed to resume AudioContext:', e);
+      console.warn('[UnifiedFocusView] Failed to resume AudioContext:', e);
     }
   }, []);
 
-  // NOTE_ON handler - MUST await audio context before playing
+  // NOTE_ON handler
   const handleNoteOn = useCallback(async (note, velocity = 100) => {
     await ensureAudioContext();
     
-    if (audioEngine) {
+    // Only play sounds for MY instrument
+    if (audioEngine && selectedTab === instrument) {
       audioEngine.playNote(instrument, note, velocity);
     }
-    if (sendNote) {
+    if (sendNote && selectedTab === instrument) {
       sendNote(instrument, note, 'NOTE_ON', velocity);
     }
     if (navigator.vibrate) {
       navigator.vibrate(10);
     }
-  }, [instrument, audioEngine, sendNote, ensureAudioContext]);
+  }, [instrument, selectedTab, audioEngine, sendNote, ensureAudioContext]);
 
   // NOTE_OFF handler
   const handleNoteOff = useCallback((note) => {
-    if (audioEngine) {
+    if (audioEngine && selectedTab === instrument) {
       audioEngine.stopNote(instrument, note);
     }
-    if (sendNote) {
+    if (sendNote && selectedTab === instrument) {
       sendNote(instrument, note, 'NOTE_OFF', 0);
     }
-  }, [instrument, audioEngine, sendNote]);
+  }, [instrument, selectedTab, audioEngine, sendNote]);
 
   // Guitar-specific handlers
   const handleBend = useCallback((note, semitones) => {
-    if (instrument === 'GUITAR') {
+    if (selectedTab === 'GUITAR' && selectedTab === instrument) {
       bendNote(note, semitones);
     }
-  }, [instrument]);
+  }, [selectedTab, instrument]);
 
   const handleVibrato = useCallback((note, depth, rate) => {
-    if (instrument === 'GUITAR') {
+    if (selectedTab === 'GUITAR' && selectedTab === instrument) {
       applyVibrato(note, depth, rate);
     }
-  }, [instrument]);
+  }, [selectedTab, instrument]);
 
   const handleSlide = useCallback((fromNote, toNote, duration) => {
-    if (instrument === 'GUITAR') {
+    if (selectedTab === 'GUITAR' && selectedTab === instrument) {
       slideToNote(fromNote, toNote, duration);
     }
-  }, [instrument]);
+  }, [selectedTab, instrument]);
 
   const handleHammerOn = useCallback((note, velocity) => {
-    if (instrument === 'GUITAR') {
+    if (selectedTab === 'GUITAR' && selectedTab === instrument) {
       hammerOn(note, velocity);
     }
     handleNoteOn(note, velocity);
-  }, [instrument, handleNoteOn]);
-
-  // Guitar-specific parameter handlers
-  const handlePalmMuteChange = useCallback((amount) => {
-    if (instrument === 'GUITAR') {
-      setPalmMute(amount);
-    }
-  }, [instrument]);
-
-  const handlePickPositionChange = useCallback((position) => {
-    if (instrument === 'GUITAR') {
-      setPickPosition(position);
-    }
-  }, [instrument]);
-
-  const handlePickupChange = useCallback((position) => {
-    if (instrument === 'GUITAR') {
-      setPickupPosition(position);
-    }
-  }, [instrument]);
-
-  const handleToneChange = useCallback((value) => {
-    if (instrument === 'GUITAR') {
-      setTone(value);
-    }
-  }, [instrument]);
+  }, [selectedTab, instrument, handleNoteOn]);
 
   // Volume control
   const handleVolumeChange = (value) => {
@@ -361,7 +366,7 @@ export default function MobileFocusView({
     }
   };
 
-  // Toggle camera with position cycling
+  // Toggle cameras
   const toggleCameras = useCallback(() => {
     if (showCameras) {
       if (cameraPosition === 'top') {
@@ -396,77 +401,50 @@ export default function MobileFocusView({
   const handleConfirmExit = () => {
     setShowExitDialog(false);
     onExit?.();
-    // Navigate to landing page
     window.location.href = '/';
   };
 
-  // Close share menu when clicking outside
+  // Check if viewing own instrument
+  const isViewingOwnInstrument = selectedTab === instrument;
+
+  // Close menus when clicking outside
   useEffect(() => {
-    const handleClickOutside = () => setShowShareMenu(false);
-    if (showShareMenu) {
+    const handleClickOutside = () => {
+      setShowShareMenu(false);
+      setShowSettings(false);
+    };
+    if (showShareMenu || showSettings) {
       document.addEventListener('click', handleClickOutside);
       return () => document.removeEventListener('click', handleClickOutside);
     }
-  }, [showShareMenu]);
+  }, [showShareMenu, showSettings]);
 
-  // Render the instrument view based on mode
+  // Render the instrument view based on selected tab
   const renderInstrumentView = () => {
-    switch (instrument) {
+    const isOwnInstrument = selectedTab === instrument;
+    
+    switch (selectedTab) {
       case 'DRUMS':
-        return currentMode === 'pad' ? (
+        return (
           <FullscreenDrumPad
             onNoteOn={handleNoteOn}
             onNoteOff={handleNoteOff}
-            focusModeActive={true}
-          />
-        ) : (
-          <DrumSetView
-            onNoteOn={handleNoteOn}
-            onNoteOff={handleNoteOff}
-          />
-        );
-      
-      case 'EP':
-        return currentMode === 'keyboard' ? (
-          <FullscreenKeyboard
-            instrument={instrument}
-            onNoteOn={handleNoteOn}
-            onNoteOff={handleNoteOff}
-            focusModeActive={true}
-          />
-        ) : (
-          <ChordPadView
-            instrument={instrument}
-            onNoteOn={handleNoteOn}
-            onNoteOff={handleNoteOff}
-            proMode={true}
+            focusModeActive={isOwnInstrument}
+            viewOnly={!isOwnInstrument}
           />
         );
       
       case 'BASS':
-        return currentMode === 'keyboard' ? (
-          <FullscreenKeyboard
-            instrument={instrument}
-            onNoteOn={handleNoteOn}
-            onNoteOff={handleNoteOff}
-            focusModeActive={true}
-          />
-        ) : (
+        return (
           <BassGuitarView
             onNoteOn={handleNoteOn}
             onNoteOff={handleNoteOff}
+            viewOnly={!isOwnInstrument}
           />
         );
       
       case 'GUITAR':
-        return currentMode === 'keyboard' ? (
-          <FullscreenKeyboard
-            instrument={instrument}
-            onNoteOn={handleNoteOn}
-            onNoteOff={handleNoteOff}
-            focusModeActive={true}
-          />
-        ) : (
+        return (
           <GuitarNeckView
             onNoteOn={handleNoteOn}
             onNoteOff={handleNoteOff}
@@ -474,10 +452,18 @@ export default function MobileFocusView({
             onVibrato={handleVibrato}
             onSlide={handleSlide}
             onHammerOn={handleHammerOn}
-            onPalmMuteChange={handlePalmMuteChange}
-            onPickPositionChange={handlePickPositionChange}
-            onPickupChange={handlePickupChange}
-            onToneChange={handleToneChange}
+            viewOnly={!isOwnInstrument}
+          />
+        );
+      
+      case 'EP':
+        return (
+          <PianoWithPadsView
+            instrument={selectedTab}
+            onNoteOn={handleNoteOn}
+            onNoteOff={handleNoteOff}
+            focusModeActive={isOwnInstrument}
+            viewOnly={!isOwnInstrument}
           />
         );
       
@@ -506,7 +492,7 @@ export default function MobileFocusView({
             opacity: [0.2, 0.4, 0.2]
           }}
           transition={{ duration: 8, repeat: Infinity, ease: 'easeInOut' }}
-          className={`absolute top-[-30%] left-[-30%] w-[600px] h-[600px] bg-gradient-radial ${theme.gradient} rounded-full blur-[100px]`}
+          className={`absolute top-[-30%] left-[-30%] w-[600px] h-[600px] bg-gradient-radial ${config.gradient} rounded-full blur-[100px]`}
         />
         <motion.div
           animate={{
@@ -536,13 +522,10 @@ export default function MobileFocusView({
           <span className="text-white font-semibold text-sm hidden sm:block">Jam in a Docs</span>
         </button>
 
-        {/* Center - Instrument info */}
-        <div className="flex items-center gap-3">
-          <span className="text-2xl">{theme.icon}</span>
-          <div className="text-center">
-            <h1 className="text-white font-bold text-lg">{theme.name}</h1>
-            <p className="text-white/50 text-xs">{player?.displayName || 'Focus Mode'}</p>
-          </div>
+        {/* Center - Room code */}
+        <div className="flex items-center gap-2">
+          <span className="text-white/50 text-xs">Room:</span>
+          <span className="text-white font-mono font-bold">{roomId?.toUpperCase()}</span>
         </div>
 
         {/* Right controls */}
@@ -572,15 +555,6 @@ export default function MobileFocusView({
             }`}
           >
             <Video className="w-5 h-5" />
-            {showCameras && (
-              <span className="absolute -top-1 -right-1 w-4 h-4 bg-cyan-500 rounded-full flex items-center justify-center">
-                {cameraPosition === 'top' ? (
-                  <ChevronUp className="w-3 h-3 text-white" />
-                ) : (
-                  <ChevronDown className="w-3 h-3 text-white" />
-                )}
-              </span>
-            )}
           </button>
           <button
             onClick={toggleChat}
@@ -593,45 +567,83 @@ export default function MobileFocusView({
         </div>
       </motion.div>
 
-      {/* Mode Switcher */}
+      {/* Instrument Tabs with Players */}
       <motion.div
         initial={{ y: -20, opacity: 0 }}
         animate={{ y: 0, opacity: 1 }}
         transition={{ delay: 0.2 }}
-        className="relative z-10 px-4 py-3 bg-black/20 backdrop-blur-sm"
+        className="relative z-10 px-4 py-2 bg-black/20 backdrop-blur-sm border-b border-white/5"
       >
-        <div className="flex gap-2">
-          {modes.map((mode) => {
-            const Icon = mode.icon;
-            const isActive = currentMode === mode.id;
+        <div className="flex gap-2 overflow-x-auto scrollbar-hide">
+          {INSTRUMENT_ORDER.map((inst) => {
+            const instConfig = INSTRUMENT_CONFIG[inst];
+            const instPlayer = getPlayerForInstrument(inst);
+            const isSelected = selectedTab === inst;
+            const isMyInstrument = inst === instrument;
+            
             return (
               <button
-                key={mode.id}
-                onClick={() => setCurrentMode(mode.id)}
+                key={inst}
+                onClick={() => setSelectedTab(inst)}
                 className={`
-                  flex-1 flex items-center justify-center gap-2 py-3 px-4 rounded-xl
+                  flex-shrink-0 flex items-center gap-2 px-4 py-2.5 rounded-xl
                   font-semibold text-sm transition-all duration-200
-                  ${isActive 
+                  ${isSelected 
                     ? 'bg-white text-black shadow-lg' 
-                    : 'bg-white/10 text-white/70 hover:bg-white/20 hover:text-white'
+                    : 'bg-white/5 text-white/60 hover:bg-white/10 hover:text-white'
                   }
+                  ${isMyInstrument && !isSelected ? 'ring-2 ring-violet-500/50' : ''}
                 `}
               >
-                <Icon className="w-4 h-4" />
-                <span>{mode.label}</span>
+                <span className="text-lg">{instConfig.icon}</span>
+                <span className="hidden sm:inline">{instConfig.name}</span>
+                
+                {/* Player indicator */}
+                {instPlayer ? (
+                  <div 
+                    className="w-6 h-6 rounded-full flex items-center justify-center text-white text-xs font-bold"
+                    style={{ backgroundColor: instPlayer.color }}
+                    title={instPlayer.displayName}
+                  >
+                    {instPlayer.displayName?.[0]?.toUpperCase() || '?'}
+                  </div>
+                ) : (
+                  <div className="w-6 h-6 rounded-full bg-white/10 flex items-center justify-center">
+                    <span className="text-white/30 text-xs">-</span>
+                  </div>
+                )}
+                
+                {/* "You" indicator */}
+                {isMyInstrument && (
+                  <span className="px-2 py-0.5 rounded-full bg-violet-500/30 text-violet-300 text-xs">
+                    You
+                  </span>
+                )}
               </button>
             );
           })}
         </div>
       </motion.div>
 
-      {/* Band Member Activity Indicators */}
-      <BandMemberIndicators
-        players={players}
-        currentUserId={userId}
-        noteEvents={noteEvents}
-        position="top"
-      />
+      {/* View Mode Indicator */}
+      {!isViewingOwnInstrument && (
+        <motion.div
+          initial={{ opacity: 0, y: -10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="mx-4 mt-2 px-4 py-2 bg-cyan-500/20 border border-cyan-500/30 rounded-xl flex items-center justify-center gap-2"
+        >
+          <Eye className="w-4 h-4 text-cyan-400" />
+          <span className="text-cyan-300 text-sm font-medium">
+            Watching {getPlayerForInstrument(selectedTab)?.displayName || 'Empty'}'s {INSTRUMENT_CONFIG[selectedTab].name}
+          </span>
+          <button
+            onClick={() => setSelectedTab(instrument)}
+            className="ml-2 px-3 py-1 bg-cyan-500/30 hover:bg-cyan-500/40 rounded-lg text-xs text-cyan-200 font-medium transition-colors"
+          >
+            Back to My {INSTRUMENT_CONFIG[instrument].name}
+          </button>
+        </motion.div>
+      )}
 
       {/* Main Instrument Area with Camera Overlays */}
       <motion.div
@@ -659,14 +671,14 @@ export default function MobileFocusView({
         {/* Instrument View */}
         <AnimatePresence mode="wait">
           <motion.div
-            key={currentMode}
+            key={selectedTab}
             initial={{ opacity: 0, x: 20 }}
             animate={{ opacity: 1, x: 0 }}
             exit={{ opacity: 0, x: -20 }}
             transition={{ duration: 0.2 }}
             className={`
               w-full h-full
-              ${showCameras ? (cameraPosition === 'top' ? 'pt-[200px]' : 'pb-[200px]') : ''}
+              ${showCameras ? (cameraPosition === 'top' ? 'pt-[120px]' : 'pb-[120px]') : ''}
             `}
             style={{
               transition: 'padding 0.3s ease-in-out'
@@ -731,14 +743,27 @@ export default function MobileFocusView({
           </div>
 
           {/* Settings */}
-          <button
-            onClick={() => setShowSettings(!showSettings)}
-            className={`p-2.5 rounded-xl transition-colors ${
-              showSettings ? 'bg-white/20 text-white' : 'bg-white/10 text-white/70 hover:text-white'
-            }`}
-          >
-            <Settings className="w-5 h-5" />
-          </button>
+          <div className="relative">
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setShowSettings(!showSettings);
+              }}
+              className={`p-2.5 rounded-xl transition-colors ${
+                showSettings ? 'bg-white/20 text-white' : 'bg-white/10 text-white/70 hover:text-white'
+              }`}
+            >
+              <Settings className="w-5 h-5" />
+            </button>
+            <SettingsPanel
+              isOpen={showSettings}
+              onClose={() => setShowSettings(false)}
+              volume={volume}
+              onVolumeChange={handleVolumeChange}
+              isMuted={isMuted}
+              onToggleMute={toggleMute}
+            />
+          </div>
         </motion.div>
       )}
 
