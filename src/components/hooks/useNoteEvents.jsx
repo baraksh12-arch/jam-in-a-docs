@@ -274,11 +274,9 @@ export function useNoteEvents(roomId, userId, audioEngine, peers, room, onNoteAc
       // Send via WebRTC
       webrtcInstance.sendJamEvent(event);
 
-      // Local echo: play the note immediately for the sender
-      // This matches the previous behavior where you hear yourself
+      // NOTE: Local playback is handled by the caller (e.g., handleNotePlay in InstrumentPanel)
+      // We only trigger the activity indicator here, not the audio (to avoid duplicate sounds)
       if (type === 'NOTE_ON') {
-        audioEngine.playNote(instrument, note, velocity);
-        
         // Trigger activity indicator for local notes
         if (onNoteActivity) {
           onNoteActivity({
@@ -288,9 +286,8 @@ export function useNoteEvents(roomId, userId, audioEngine, peers, room, onNoteAc
             velocity
           });
         }
-      } else if (type === 'NOTE_OFF') {
-        audioEngine.stopNote(instrument, note);
       }
+      // NOTE_OFF is also handled by the caller if needed
 
     } catch (error) {
       console.error('Failed to send note event:', error);

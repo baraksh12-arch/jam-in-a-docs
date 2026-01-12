@@ -71,7 +71,20 @@
  * @typedef {NoteOnEvent|NoteOffEvent|ControlChangeEvent|TempoEvent|PitchBendEvent} JamEvent
  */
 
-const VALID_EVENT_TYPES = ['noteOn', 'noteOff', 'controlChange', 'tempo', 'pitchBend'];
+const VALID_EVENT_TYPES = [
+  'noteOn', 
+  'noteOff', 
+  'controlChange', 
+  'tempo', 
+  'pitchBend',
+  // Guitar-specific events for physically-informed synthesis
+  'guitarPluck',
+  'guitarSlide',
+  'guitarBend',
+  'guitarVibrato',
+  'guitarMute',
+  'guitarParam'
+];
 const VALID_INSTRUMENTS = ['DRUMS', 'BASS', 'EP', 'GUITAR'];
 
 /**
@@ -226,6 +239,67 @@ export function isJamEvent(obj) {
       }
       return true;
 
+    // Guitar-specific event types for physically-informed collaboration
+    case 'guitarPluck':
+      // { stringIndex, fret, velocity, pickPos, pickHardness, palmMute }
+      if (typeof obj.stringIndex !== 'number' || obj.stringIndex < 0 || obj.stringIndex > 5) {
+        return false;
+      }
+      if (typeof obj.fret !== 'number' || obj.fret < 0 || obj.fret > 24) {
+        return false;
+      }
+      if (typeof obj.velocity !== 'number' || obj.velocity < 0 || obj.velocity > 127) {
+        return false;
+      }
+      return true;
+
+    case 'guitarSlide':
+      // { stringIndex, fretFrom, fretTo, durationMs }
+      if (typeof obj.stringIndex !== 'number' || obj.stringIndex < 0 || obj.stringIndex > 5) {
+        return false;
+      }
+      if (typeof obj.fretFrom !== 'number' || typeof obj.fretTo !== 'number') {
+        return false;
+      }
+      if (typeof obj.durationMs !== 'number' || obj.durationMs < 0) {
+        return false;
+      }
+      return true;
+
+    case 'guitarBend':
+      // { stringIndex, cents }
+      if (typeof obj.stringIndex !== 'number' || obj.stringIndex < 0 || obj.stringIndex > 5) {
+        return false;
+      }
+      if (typeof obj.cents !== 'number') {
+        return false;
+      }
+      return true;
+
+    case 'guitarVibrato':
+      // { stringIndex, depthCents, rateHz }
+      if (typeof obj.stringIndex !== 'number' || obj.stringIndex < 0 || obj.stringIndex > 5) {
+        return false;
+      }
+      if (typeof obj.depthCents !== 'number' || typeof obj.rateHz !== 'number') {
+        return false;
+      }
+      return true;
+
+    case 'guitarMute':
+      // { stringIndex, amount } or { amount } for global palm mute
+      if (typeof obj.amount !== 'number' || obj.amount < 0 || obj.amount > 1) {
+        return false;
+      }
+      return true;
+
+    case 'guitarParam':
+      // { param, value } for pickup position, tone, etc.
+      if (typeof obj.param !== 'string') {
+        return false;
+      }
+      return true;
+
     default:
       return false;
   }
@@ -307,6 +381,172 @@ export function createNoteOffEvent({ instrument, note, roomTime, senderId, times
     senderId,
     timestamp: eventTimestamp
   };
+}
+
+/**
+ * Create a guitarPluck event
+ * 
+ * @param {Object} params
+ * @param {number} params.stringIndex - String index (0-5, 0=high E)
+ * @param {number} params.fret - Fret number (0-24)
+ * @param {number} params.velocity - MIDI velocity (0-127)
+ * @param {number} [params.pickPos] - Pick position (0-1, 0=bridge)
+ * @param {number} [params.pickHardness] - Pick hardness (0-1)
+ * @param {number} [params.palmMute] - Palm mute amount (0-1)
+ * @param {number} params.roomTime
+ * @param {string} params.senderId
+ * @returns {Object}
+ */
+export function createGuitarPluckEvent({ stringIndex, fret, velocity, pickPos = 0.13, pickHardness = 0.7, palmMute = 0, roomTime, senderId }) {
+  const timestamp = getTimestamp();
+  return {
+    type: 'guitarPluck',
+    instrument: 'GUITAR',
+    stringIndex,
+    fret,
+    velocity,
+    pickPos,
+    pickHardness,
+    palmMute,
+    roomTime,
+    senderId,
+    timestamp
+  };
+}
+
+/**
+ * Create a guitarSlide event
+ * 
+ * @param {Object} params
+ * @param {number} params.stringIndex - String index (0-5)
+ * @param {number} params.fretFrom - Starting fret
+ * @param {number} params.fretTo - Ending fret
+ * @param {number} params.durationMs - Slide duration in milliseconds
+ * @param {number} params.roomTime
+ * @param {string} params.senderId
+ * @returns {Object}
+ */
+export function createGuitarSlideEvent({ stringIndex, fretFrom, fretTo, durationMs, roomTime, senderId }) {
+  const timestamp = getTimestamp();
+  return {
+    type: 'guitarSlide',
+    instrument: 'GUITAR',
+    stringIndex,
+    fretFrom,
+    fretTo,
+    durationMs,
+    roomTime,
+    senderId,
+    timestamp
+  };
+}
+
+/**
+ * Create a guitarBend event
+ * 
+ * @param {Object} params
+ * @param {number} params.stringIndex - String index (0-5)
+ * @param {number} params.cents - Bend amount in cents
+ * @param {number} params.roomTime
+ * @param {string} params.senderId
+ * @returns {Object}
+ */
+export function createGuitarBendEvent({ stringIndex, cents, roomTime, senderId }) {
+  const timestamp = getTimestamp();
+  return {
+    type: 'guitarBend',
+    instrument: 'GUITAR',
+    stringIndex,
+    cents,
+    roomTime,
+    senderId,
+    timestamp
+  };
+}
+
+/**
+ * Create a guitarVibrato event
+ * 
+ * @param {Object} params
+ * @param {number} params.stringIndex - String index (0-5)
+ * @param {number} params.depthCents - Vibrato depth in cents
+ * @param {number} params.rateHz - Vibrato rate in Hz
+ * @param {number} params.roomTime
+ * @param {string} params.senderId
+ * @returns {Object}
+ */
+export function createGuitarVibratoEvent({ stringIndex, depthCents, rateHz, roomTime, senderId }) {
+  const timestamp = getTimestamp();
+  return {
+    type: 'guitarVibrato',
+    instrument: 'GUITAR',
+    stringIndex,
+    depthCents,
+    rateHz,
+    roomTime,
+    senderId,
+    timestamp
+  };
+}
+
+/**
+ * Create a guitarMute event (palm mute)
+ * 
+ * @param {Object} params
+ * @param {number} [params.stringIndex] - Optional string index for per-string mute
+ * @param {number} params.amount - Mute amount (0-1)
+ * @param {number} params.roomTime
+ * @param {string} params.senderId
+ * @returns {Object}
+ */
+export function createGuitarMuteEvent({ stringIndex, amount, roomTime, senderId }) {
+  const timestamp = getTimestamp();
+  return {
+    type: 'guitarMute',
+    instrument: 'GUITAR',
+    ...(stringIndex !== undefined && { stringIndex }),
+    amount,
+    roomTime,
+    senderId,
+    timestamp
+  };
+}
+
+/**
+ * Create a guitarParam event for parameter changes (pickup, tone, etc.)
+ * 
+ * @param {Object} params
+ * @param {string} params.param - Parameter name ('pickupPosition', 'tone', 'pickPosition', 'pickHardness')
+ * @param {any} params.value - Parameter value
+ * @param {number} params.roomTime
+ * @param {string} params.senderId
+ * @returns {Object}
+ */
+export function createGuitarParamEvent({ param, value, roomTime, senderId }) {
+  const timestamp = getTimestamp();
+  return {
+    type: 'guitarParam',
+    instrument: 'GUITAR',
+    param,
+    value,
+    roomTime,
+    senderId,
+    timestamp
+  };
+}
+
+/**
+ * Helper to get timestamp using syncedNow if available
+ */
+function getTimestamp() {
+  if (typeof window !== 'undefined' && window.__syncedNow) {
+    try {
+      return window.__syncedNow();
+    } catch (error) {
+      return Date.now();
+    }
+  }
+  return Date.now();
 }
 
 /**

@@ -1,462 +1,678 @@
 import * as Tone from 'tone';
 
 /**
- * Guitar Instrument with John Mayer-Level Sound Design
+ * Electric Guitar - Karplus-Strong Synthesis
  * 
- * Features:
- * - Karplus-Strong plucked string synthesis with pitch bending
- * - Real-time vibrato, bends, slides, hammer-ons
- * - Electric and Nylon guitar modes
- * - Professional amp simulation chain
- * 
- * Pitch bending uses detune for real-time pitch manipulation
+ * Production-ready physically-modeled electric guitar:
+ * - True Karplus-Strong string synthesis
+ * - Fractional delay for accurate tuning
+ * - Real-time pitch bends and vibrato
+ * - Palm mute with dramatic effect
+ * - Pickup and tone simulation
  */
 
-// Guitar mode constants
+// ============================================================================
+// CONSTANTS
+// ============================================================================
+
 export const GUITAR_MODE_ELECTRIC = 'electric';
 export const GUITAR_MODE_NYLON = 'nylon';
 
-// Active voices for polyphonic pitch bending
-let activeVoices = new Map(); // note -> { synth, oscillator, filter, envelope, gainNode }
-let effectsChain = null;
+const MAX_VOICES = 6;
+const BUFFER_SIZE = 512; // Larger buffer for stability
+
+// ============================================================================
+// MODULE STATE
+// ============================================================================
+
+let audioContext = null;
 let masterGain = null;
-
-// Effects
-let chorus = null;
-let distortion = null;
-let reverb = null;
-let compressor = null;
-let eq = null;
-let delay = null;
-
+let isInitialized = false;
 let currentGuitarMode = GUITAR_MODE_ELECTRIC;
 let masterVolume = 0.7;
-let isInitialized = false;
 
-// Voice pool for polyphony
-const MAX_VOICES = 6; // Guitar has 6 strings
-let voicePool = [];
+// Voice management
+let voices = [];
+let activeVoiceMap = new Map(); // MIDI note -> voice index
 
-/**
- * Create a single guitar voice using subtractive synthesis
- * More controllable than PluckSynth for bends/vibrato
- */
-function createGuitarVoice() {
-  const context = Tone.getContext();
+// Global parameters that affect ALL notes (including currently playing ones)
+let globalPalmMute = 0;
+let globalTone = 0.7;
+let globalPickup = 'bridge';
+let globalPickPosition = 0.13;
+let globalPickHardness = 0.7;
+
+// ============================================================================
+// KARPLUS-STRONG VOICE CLASS
+// ============================================================================
+
+class KSVoice {
+  constructor(ctx, output) {
+    this.ctx = ctx;
+    this.sampleRate = ctx.sampleRate;
+    this.output = output;
+    
+    // Voice state
+    this.active = false;
+    this.midiNote = null;
+    this.baseFreq = 440;
+    
+    // Real-time modulation (these change during playback)
+    this.bendSemitones = 0;
+    this.vibratoDepth = 0; // cents
+    this.vibratoRate = 5;
+    this.vibratoPhase = 0;
+    
+    // KS delay line
+    this.maxDelay = Math.ceil(this.sampleRate / 20); // lowest freq ~20Hz
+    this.delayLine = new Float32Array(this.maxDelay);
+    this.delayLength = 100;
+    this.writePtr = 0;
+    this.fracDelay = 0;
+    
+    // Filter states
+    this.lpState = 0;
+    this.dcBlock = 0;
+    this.prevSample = 0;
+    
+    // Envelope
+    this.amplitude = 0;
+    this.targetAmp = 0;
+    
+    // Per-note palm mute (captured at pluck time + real-time global)
+    this.notePalmMute = 0;
+    
+    // Damping
+    this.baseDamping = 0.998;
+    
+    // Create audio nodes
+    this.processor = ctx.createScriptProcessor(BUFFER_SIZE, 0, 1);
+    this.processor.onaudioprocess = (e) => this.render(e);
+    
+    this.gainNode = ctx.createGain();
+    this.gainNode.gain.value = 1;
+    
+    // Filters for tone shaping
+    this.lpFilter = ctx.createBiquadFilter();
+    this.lpFilter.type = 'lowpass';
+    this.lpFilter.frequency.value = 5000;
+    this.lpFilter.Q.value = 1;
+    
+    this.hpFilter = ctx.createBiquadFilter();
+    this.hpFilter.type = 'highpass';
+    this.hpFilter.frequency.value = 60;
+    this.hpFilter.Q.value = 0.7;
+    
+    // Connect: processor -> gain -> lp -> hp -> output
+    this.processor.connect(this.gainNode);
+    this.gainNode.connect(this.lpFilter);
+    this.lpFilter.connect(this.hpFilter);
+    this.hpFilter.connect(output);
+  }
   
-  // Oscillator with sawtooth for rich harmonics (guitar-like)
-  const osc = new Tone.Oscillator({
-    type: 'sawtooth',
-    frequency: 440,
-  });
+  /**
+   * Pluck the string
+   */
+  pluck(midiNote, velocity, palmMute, pickPos, pickHardness) {
+    this.midiNote = midiNote;
+    this.baseFreq = 440 * Math.pow(2, (midiNote - 69) / 12);
+    this.notePalmMute = palmMute;
+    
+    // Reset modulation
+    this.bendSemitones = 0;
+    this.vibratoDepth = 0;
+    this.vibratoPhase = 0;
+    
+    // Calculate delay length
+    const freq = this.baseFreq;
+    const totalDelay = this.sampleRate / freq;
+    this.delayLength = Math.floor(totalDelay);
+    this.fracDelay = totalDelay - this.delayLength;
+    
+    // Clamp delay length
+    if (this.delayLength < 2) this.delayLength = 2;
+    if (this.delayLength > this.maxDelay - 2) this.delayLength = this.maxDelay - 2;
+    
+    // Calculate damping (palm mute = much more damping)
+    const effectivePalmMute = Math.max(palmMute, globalPalmMute);
+    this.baseDamping = 0.9985 - (freq * 0.000012);
+    if (effectivePalmMute > 0.1) {
+      this.baseDamping -= effectivePalmMute * 0.008; // Significant damping increase
+    }
+    this.baseDamping = Math.max(0.95, Math.min(0.9995, this.baseDamping));
+    
+    // Clear delay line and fill with shaped noise burst
+    this.delayLine.fill(0);
+    this.writePtr = 0;
+    this.lpState = 0;
+    this.dcBlock = 0;
+    this.prevSample = 0;
+    
+    // Generate excitation (noise burst)
+    const velNorm = Math.pow(velocity / 127, 0.7);
+    const burstLen = Math.min(this.delayLength, Math.floor(80 * (this.sampleRate / 44100)));
+    
+    // Palm mute makes burst shorter and darker
+    const actualBurstLen = effectivePalmMute > 0.1 
+      ? Math.floor(burstLen * (1 - effectivePalmMute * 0.6))
+      : burstLen;
+    
+    let prev = 0;
+    const lpCoeff = 0.3 + pickHardness * 0.6; // Harder pick = brighter
+    
+    for (let i = 0; i < actualBurstLen; i++) {
+      let noise = Math.random() * 2 - 1;
+      
+      // Low-pass for pick softness
+      noise = prev + lpCoeff * (noise - prev);
+      prev = noise;
+      
+      // Envelope
+      const env = 1 - (i / actualBurstLen);
+      
+      // Palm mute darkens the excitation
+      if (effectivePalmMute > 0.1) {
+        noise *= (1 - effectivePalmMute * 0.4);
+      }
+      
+      this.delayLine[i] = noise * env * velNorm * 0.8;
+    }
+    
+    // Set amplitude
+    this.targetAmp = effectivePalmMute > 0.1 ? 0.7 : 0.85;
+    this.amplitude = this.targetAmp;
+    this.active = true;
+    
+    // Update filter based on pickup/tone
+    this.updateFilters();
+  }
   
-  // Secondary oscillator for thickness
-  const osc2 = new Tone.Oscillator({
-    type: 'triangle',
-    frequency: 440,
-  });
+  /**
+   * Update filters based on global settings
+   */
+  updateFilters() {
+    // Pickup position affects brightness
+    let cutoff = 5000;
+    if (globalPickup === 'neck') cutoff = 2500;
+    else if (globalPickup === 'middle') cutoff = 3500;
+    
+    // Tone knob
+    cutoff *= (0.3 + globalTone * 0.7);
+    
+    // Palm mute dramatically reduces highs
+    const effectiveMute = Math.max(this.notePalmMute, globalPalmMute);
+    if (effectiveMute > 0.1) {
+      cutoff *= (1 - effectiveMute * 0.6);
+    }
+    
+    this.lpFilter.frequency.setValueAtTime(
+      Math.max(500, Math.min(10000, cutoff)), 
+      this.ctx.currentTime
+    );
+  }
   
-  // Low-pass filter simulates string dampening
-  const filter = new Tone.Filter({
-    type: 'lowpass',
-    frequency: 3000,
-    Q: 2,
-    rolloff: -24,
-  });
+  /**
+   * Apply pitch bend (semitones)
+   */
+  bend(semitones) {
+    this.bendSemitones = semitones;
+  }
   
-  // Envelope for pluck dynamics
-  const envelope = new Tone.AmplitudeEnvelope({
-    attack: 0.002,
-    decay: 0.3,
-    sustain: 0.4,
-    release: 0.8,
-    attackCurve: 'exponential',
-    releaseCurve: 'exponential',
-  });
+  /**
+   * Apply vibrato
+   */
+  setVibrato(depthCents, rateHz) {
+    this.vibratoDepth = depthCents;
+    this.vibratoRate = rateHz;
+  }
   
-  // Gain for mixing
-  const gain = new Tone.Gain(0);
+  /**
+   * Release note (natural decay)
+   */
+  release() {
+    this.targetAmp = 0;
+  }
   
-  // Connect: osc -> filter -> envelope -> gain
-  osc.connect(filter);
-  osc2.connect(filter);
-  filter.connect(envelope);
-  envelope.connect(gain);
+  /**
+   * Stop immediately
+   */
+  stop() {
+    this.active = false;
+    this.amplitude = 0;
+    this.targetAmp = 0;
+    this.midiNote = null;
+  }
   
-  return {
-    osc,
-    osc2,
-    filter,
-    envelope,
-    gain,
-    isPlaying: false,
-    currentNote: null,
-    currentFreq: 440,
-    targetFreq: 440,
-    bendAmount: 0,
-    vibratoLFO: null,
-  };
+  /**
+   * Audio processing callback
+   */
+  render(e) {
+    const out = e.outputBuffer.getChannelData(0);
+    const len = out.length;
+    
+    if (!this.active) {
+      for (let i = 0; i < len; i++) out[i] = 0;
+      return;
+    }
+    
+    // Get current palm mute (combine note-level and global) - REAL TIME!
+    const effectivePalmMute = Math.max(this.notePalmMute, globalPalmMute);
+    
+    // Recalculate damping based on palm mute - DRAMATIC EFFECT
+    let damping = this.baseDamping;
+    if (effectivePalmMute > 0.05) {
+      // Palm mute DRAMATICALLY increases damping (shorter sustain)
+      damping = this.baseDamping - (effectivePalmMute * 0.015);
+      damping = Math.max(0.92, damping); // Can go quite low for heavy muting
+    }
+    
+    // Pre-calculate vibrato increment
+    const vibratoInc = (this.vibratoRate * 2 * Math.PI) / this.sampleRate;
+    
+    for (let i = 0; i < len; i++) {
+      // === CALCULATE CURRENT FREQUENCY ===
+      let freq = this.baseFreq;
+      
+      // Apply bend - THIS CHANGES THE PITCH!
+      if (Math.abs(this.bendSemitones) > 0.001) {
+        freq *= Math.pow(2, this.bendSemitones / 12);
+      }
+      
+      // Apply vibrato - OSCILLATES THE PITCH!
+      if (this.vibratoDepth > 0.1) {
+        this.vibratoPhase += vibratoInc;
+        if (this.vibratoPhase > 6.283185) this.vibratoPhase -= 6.283185;
+        const vibCents = Math.sin(this.vibratoPhase) * this.vibratoDepth;
+        freq *= Math.pow(2, vibCents / 1200);
+      }
+      
+      // Update delay length for new frequency - THIS IS HOW PITCH CHANGES
+      const totalDelay = this.sampleRate / freq;
+      const newDelayLen = Math.floor(totalDelay);
+      
+      if (newDelayLen !== this.delayLength && newDelayLen >= 2 && newDelayLen < this.maxDelay - 2) {
+        this.delayLength = newDelayLen;
+      }
+      this.fracDelay = totalDelay - this.delayLength;
+      
+      // === KARPLUS-STRONG ALGORITHM ===
+      
+      // Read from delay line with linear interpolation
+      let readPtr = this.writePtr - this.delayLength;
+      if (readPtr < 0) readPtr += this.maxDelay;
+      
+      let readPtrPrev = readPtr - 1;
+      if (readPtrPrev < 0) readPtrPrev += this.maxDelay;
+      
+      const s0 = this.delayLine[readPtr];
+      const s1 = this.delayLine[readPtrPrev];
+      
+      // Linear interpolation for fractional delay
+      let sample = s0 + this.fracDelay * (s1 - s0);
+      
+      // KS averaging filter (the core of Karplus-Strong)
+      sample = 0.5 * (sample + this.prevSample);
+      this.prevSample = this.delayLine[readPtr];
+      
+      // Brightness filter - PALM MUTE MAKES IT VERY DARK
+      const brightness = effectivePalmMute > 0.05 
+        ? Math.max(0.08, 0.35 - effectivePalmMute * 0.4) // Gets very dark with mute
+        : 0.35;
+      this.lpState = this.lpState + brightness * (sample - this.lpState);
+      sample = this.lpState;
+      
+      // Apply damping (energy loss) - palm mute makes it decay FAST
+      sample *= damping;
+      
+      // Additional palm mute amplitude reduction
+      if (effectivePalmMute > 0.05) {
+        sample *= (1 - effectivePalmMute * 0.4);
+      }
+      
+      // DC blocking
+      const dcOut = sample - this.dcBlock + 0.995 * this.dcBlock;
+      this.dcBlock = sample;
+      sample = dcOut;
+      
+      // Write back to delay line
+      this.delayLine[this.writePtr] = sample;
+      this.writePtr = (this.writePtr + 1) % this.maxDelay;
+      
+      // Amplitude envelope
+      this.amplitude += (this.targetAmp - this.amplitude) * 0.001;
+      
+      // Output
+      out[i] = sample * this.amplitude;
+      
+      // Check if died out
+      if (this.targetAmp < 0.001 && Math.abs(sample) < 0.00005) {
+        this.active = false;
+        this.midiNote = null;
+        for (let j = i + 1; j < len; j++) out[j] = 0;
+        break;
+      }
+    }
+    
+    // Update filters each buffer (for real-time parameter changes)
+    this.updateFilters();
+  }
+  
+  dispose() {
+    this.stop();
+    this.processor.disconnect();
+    this.gainNode.disconnect();
+    this.lpFilter.disconnect();
+    this.hpFilter.disconnect();
+  }
 }
 
+// ============================================================================
+// PUBLIC API
+// ============================================================================
+
 /**
- * Initialize guitar synthesizer with professional signal chain
+ * Initialize the guitar instrument
  */
 export async function initGuitar() {
-  if (isInitialized) {
-    return;
-  }
-
+  if (isInitialized) return;
+  
   try {
-    // Create master gain
-    masterGain = new Tone.Gain(masterVolume);
+    audioContext = Tone.getContext().rawContext;
     
-    // Compressor for consistent dynamics
-    compressor = new Tone.Compressor({
-      threshold: -18,
-      ratio: 4,
-      attack: 0.003,
-      release: 0.25,
-    });
+    // Master gain
+    masterGain = audioContext.createGain();
+    masterGain.gain.value = masterVolume;
+    masterGain.connect(audioContext.destination);
     
-    // EQ for tone shaping
-    eq = new Tone.EQ3({
-      low: 0,
-      mid: 2,
-      high: 1,
-      lowFrequency: 200,
-      highFrequency: 3000,
-    });
-    
-    // Chorus for width (JC-120 style clean)
-    chorus = new Tone.Chorus({
-      frequency: 1.5,
-      delayTime: 3.5,
-      depth: 0.4,
-      wet: 0.2,
-      spread: 180,
-    }).start();
-    
-    // Overdrive for tube warmth
-    distortion = new Tone.Distortion({
-      distortion: 0.15,
-      wet: 0.3,
-    });
-    
-    // Delay for ambience
-    delay = new Tone.FeedbackDelay({
-      delayTime: '8n',
-      feedback: 0.2,
-      wet: 0.15,
-    });
-    
-    // Reverb for space
-    reverb = new Tone.Reverb({
-      decay: 2,
-      wet: 0.2,
-    });
-    
-    // Create voice pool
-    voicePool = [];
+    // Create voices
+    voices = [];
     for (let i = 0; i < MAX_VOICES; i++) {
-      const voice = createGuitarVoice();
-      // Connect voice to effects chain
-      voice.gain.connect(compressor);
-      voicePool.push(voice);
+      voices.push(new KSVoice(audioContext, masterGain));
     }
-    
-    // Signal chain: compressor -> eq -> chorus -> distortion -> delay -> reverb -> master -> out
-    compressor.connect(eq);
-    eq.connect(chorus);
-    chorus.connect(distortion);
-    distortion.connect(delay);
-    delay.connect(reverb);
-    reverb.connect(masterGain);
-    masterGain.toDestination();
-    
-    // Generate reverb impulse
-    await reverb.generate();
     
     isInitialized = true;
-    console.log('[Guitar] Initialized with advanced synthesis for bends/vibrato/slides');
-  } catch (error) {
-    console.error('[Guitar] Failed to initialize:', error);
-    throw error;
+    console.log('[Guitar] Initialized with Karplus-Strong synthesis');
+  } catch (err) {
+    console.error('[Guitar] Init failed:', err);
+    throw err;
   }
 }
 
 /**
- * Get an available voice from the pool
+ * Get an available voice
  */
-function getAvailableVoice() {
-  // First try to find a non-playing voice
-  for (const voice of voicePool) {
-    if (!voice.isPlaying) {
-      return voice;
+function getVoice() {
+  // Find inactive voice
+  for (let i = 0; i < voices.length; i++) {
+    if (!voices[i].active) return i;
+  }
+  // Steal quietest voice
+  let minIdx = 0;
+  let minAmp = voices[0].amplitude;
+  for (let i = 1; i < voices.length; i++) {
+    if (voices[i].amplitude < minAmp) {
+      minAmp = voices[i].amplitude;
+      minIdx = i;
     }
   }
-  // If all voices are playing, steal the oldest one
-  return voicePool[0];
+  return minIdx;
 }
 
 /**
- * Convert MIDI note to frequency
- */
-function midiToFreq(midi) {
-  return 440 * Math.pow(2, (midi - 69) / 12);
-}
-
-/**
- * Trigger a guitar note with velocity
- * 
- * @param {number} note - MIDI note number
- * @param {number} time - Optional time
- * @param {number} velocity - MIDI velocity (0-127)
- * @returns {object} Voice object for manipulation (bends, vibrato)
+ * Trigger a note
  */
 export async function triggerNote(note, time, velocity = 100) {
   if (!isInitialized) {
     console.warn('[Guitar] Not initialized');
     return null;
   }
-
-  // Ensure AudioContext is running
-  const context = Tone.getContext();
-  if (context.state !== 'running') {
+  
+  // Ensure audio context is running
+  if (audioContext.state !== 'running') {
     try {
       await Tone.start();
+      console.log('[Guitar] Audio context started');
     } catch (e) {
-      console.warn('[Guitar] Failed to resume AudioContext:', e);
-      return null;
+      console.warn('[Guitar] Could not start audio:', e);
     }
   }
-
-  const voice = getAvailableVoice();
-  if (!voice) return null;
   
-  // Stop if already playing
-  if (voice.isPlaying) {
-    voice.osc.stop();
-    voice.osc2.stop();
-    voice.envelope.triggerRelease();
+  const idx = getVoice();
+  const voice = voices[idx];
+  
+  // Stop if currently playing different note
+  if (voice.active && voice.midiNote !== note) {
+    voice.stop();
   }
   
-  const freq = midiToFreq(note);
-  const normalizedVelocity = Math.min(127, Math.max(0, velocity)) / 127;
-  const velocityGain = Math.pow(normalizedVelocity, 0.6);
+  // Pluck with current global params
+  voice.pluck(note, velocity, globalPalmMute, globalPickPosition, globalPickHardness);
   
-  // Set frequency
-  voice.osc.frequency.value = freq;
-  voice.osc2.frequency.value = freq * 1.002; // Slight detune for thickness
-  voice.currentFreq = freq;
-  voice.targetFreq = freq;
-  voice.currentNote = note;
-  voice.bendAmount = 0;
+  // Track in map - IMPORTANT: This is how bend/vibrato find the voice
+  activeVoiceMap.set(note, idx);
   
-  // Adjust filter based on velocity (harder pick = brighter)
-  const filterFreq = currentGuitarMode === GUITAR_MODE_ELECTRIC 
-    ? 2000 + (normalizedVelocity * 4000)
-    : 1500 + (normalizedVelocity * 2000);
-  voice.filter.frequency.value = filterFreq;
-  
-  // Adjust envelope for mode
-  if (currentGuitarMode === GUITAR_MODE_NYLON) {
-    voice.envelope.attack = 0.005;
-    voice.envelope.decay = 0.4;
-    voice.envelope.sustain = 0.3;
-    voice.envelope.release = 1.2;
-  } else {
-    voice.envelope.attack = 0.002;
-    voice.envelope.decay = 0.25;
-    voice.envelope.sustain = 0.5;
-    voice.envelope.release = 0.8;
-  }
-  
-  // Set gain based on velocity
-  voice.gain.gain.value = velocityGain * 0.3;
-  
-  // Start oscillators and trigger envelope
-  const triggerTime = time || Tone.now();
-  voice.osc.start(triggerTime);
-  voice.osc2.start(triggerTime);
-  voice.envelope.triggerAttack(triggerTime);
-  voice.isPlaying = true;
-  
-  // Store active voice
-  activeVoices.set(note, voice);
-  
-  // Filter decay for natural string dampening
-  voice.filter.frequency.rampTo(filterFreq * 0.3, voice.envelope.decay + voice.envelope.release);
+  console.log('[Guitar] ✓ Pluck note:', note, 'voiceIdx:', idx, 'velocity:', velocity, 'palmMute:', globalPalmMute);
+  console.log('[Guitar] activeVoiceMap now has', activeVoiceMap.size, 'entries:', Array.from(activeVoiceMap.keys()));
   
   return voice;
 }
 
 /**
- * Release a guitar note
+ * Release a note
  */
 export function releaseNote(note, time) {
-  const voice = activeVoices.get(note);
-  if (voice && voice.isPlaying) {
-    const releaseTime = time || Tone.now();
-    voice.envelope.triggerRelease(releaseTime);
-    
-    // Schedule voice cleanup
-    setTimeout(() => {
-      if (voice.isPlaying) {
-        voice.osc.stop();
-        voice.osc2.stop();
-        voice.isPlaying = false;
-      }
-      activeVoices.delete(note);
-    }, (voice.envelope.release + 0.1) * 1000);
+  const idx = activeVoiceMap.get(note);
+  if (idx !== undefined && voices[idx]) {
+    voices[idx].release();
   }
 }
 
 /**
- * Apply pitch bend to a note (for bends and vibrato)
- * 
- * @param {number} note - MIDI note being bent
- * @param {number} semitones - Bend amount in semitones (-12 to +12)
+ * Bend a note by semitones
  */
 export function bendNote(note, semitones) {
-  const voice = activeVoices.get(note);
-  if (voice && voice.isPlaying) {
-    const bentFreq = voice.currentFreq * Math.pow(2, semitones / 12);
-    voice.osc.frequency.rampTo(bentFreq, 0.05);
-    voice.osc2.frequency.rampTo(bentFreq * 1.002, 0.05);
-    voice.bendAmount = semitones;
+  console.log('[Guitar] bendNote called:', note, 'semitones:', semitones, 'activeVoiceMap size:', activeVoiceMap.size);
+  
+  const idx = activeVoiceMap.get(note);
+  console.log('[Guitar] Voice index for note', note, ':', idx);
+  
+  if (idx !== undefined) {
+    const voice = voices[idx];
+    if (voice && voice.active) {
+      voice.bend(semitones);
+      console.log('[Guitar] ✓ Bend applied! Voice baseFreq:', voice.baseFreq, 'bendSemitones now:', voice.bendSemitones);
+    } else {
+      console.log('[Guitar] ✗ Voice not active or missing');
+    }
+  } else {
+    console.log('[Guitar] ✗ Note not found in activeVoiceMap. Keys:', Array.from(activeVoiceMap.keys()));
   }
 }
 
 /**
  * Apply vibrato to a note
- * 
- * @param {number} note - MIDI note
- * @param {number} depth - Vibrato depth in semitones (0-1)
- * @param {number} rate - Vibrato rate in Hz (4-8 typical)
  */
 export function applyVibrato(note, depth = 0.3, rate = 5) {
-  const voice = activeVoices.get(note);
-  if (voice && voice.isPlaying) {
-    // Create LFO for vibrato if not exists
-    if (!voice.vibratoLFO) {
-      voice.vibratoLFO = new Tone.LFO({
-        frequency: rate,
-        min: -depth,
-        max: depth,
-      });
-      voice.vibratoLFO.connect(voice.osc.detune);
-      voice.vibratoLFO.connect(voice.osc2.detune);
+  console.log('[Guitar] applyVibrato called:', note, 'depth:', depth, 'rate:', rate);
+  
+  const idx = activeVoiceMap.get(note);
+  if (idx !== undefined) {
+    const voice = voices[idx];
+    if (voice && voice.active) {
+      // Convert semitones to cents
+      const cents = depth * 100;
+      voice.setVibrato(cents, rate);
+      console.log('[Guitar] ✓ Vibrato applied! depthCents:', cents, 'rate:', rate);
+    } else {
+      console.log('[Guitar] ✗ Voice not active for vibrato');
     }
-    
-    voice.vibratoLFO.frequency.value = rate;
-    voice.vibratoLFO.min = -depth * 100; // Convert to cents
-    voice.vibratoLFO.max = depth * 100;
-    voice.vibratoLFO.start();
+  } else {
+    console.log('[Guitar] ✗ Note not found for vibrato:', note);
   }
 }
 
 /**
- * Stop vibrato on a note
+ * Stop vibrato
  */
 export function stopVibrato(note) {
-  const voice = activeVoices.get(note);
-  if (voice && voice.vibratoLFO) {
-    voice.vibratoLFO.stop();
-    voice.vibratoLFO.dispose();
-    voice.vibratoLFO = null;
+  const idx = activeVoiceMap.get(note);
+  if (idx !== undefined && voices[idx]) {
+    voices[idx].setVibrato(0, 5);
   }
 }
 
 /**
  * Slide from one note to another
- * 
- * @param {number} fromNote - Starting MIDI note
- * @param {number} toNote - Target MIDI note
- * @param {number} duration - Slide duration in seconds
  */
 export function slideToNote(fromNote, toNote, duration = 0.1) {
-  const voice = activeVoices.get(fromNote);
-  if (voice && voice.isPlaying) {
-    const targetFreq = midiToFreq(toNote);
-    voice.osc.frequency.rampTo(targetFreq, duration);
-    voice.osc2.frequency.rampTo(targetFreq * 1.002, duration);
-    voice.currentFreq = targetFreq;
-    voice.currentNote = toNote;
-    
-    // Update the active voices map
-    activeVoices.delete(fromNote);
-    activeVoices.set(toNote, voice);
+  console.log('[Guitar] slideToNote called:', fromNote, '->', toNote);
+  
+  const idx = activeVoiceMap.get(fromNote);
+  if (idx !== undefined) {
+    const voice = voices[idx];
+    if (voice && voice.active) {
+      voice.baseFreq = 440 * Math.pow(2, (toNote - 69) / 12);
+      voice.midiNote = toNote;
+      voice.bendSemitones = 0;
+      
+      // Update map - CRITICAL for bend/vibrato to work on new note
+      activeVoiceMap.delete(fromNote);
+      activeVoiceMap.set(toNote, idx);
+      
+      console.log('[Guitar] ✓ Slide applied! New baseFreq:', voice.baseFreq);
+    } else {
+      console.log('[Guitar] ✗ Voice not active for slide');
+    }
+  } else {
+    console.log('[Guitar] ✗ fromNote not found for slide:', fromNote);
   }
 }
 
 /**
- * Hammer-on: Play a note with reduced attack (no pick)
+ * Hammer-on
  */
 export async function hammerOn(note, velocity = 80) {
-  const voice = await triggerNote(note, undefined, velocity);
-  if (voice) {
-    // Softer attack for hammer-on
-    voice.envelope.attack = 0.01;
-    voice.filter.frequency.value *= 0.7; // Slightly darker
-  }
-  return voice;
+  return triggerNote(note, undefined, velocity * 0.75);
 }
 
 /**
- * Pull-off: Similar to hammer-on but triggered differently
+ * Pull-off
  */
 export async function pullOff(note, velocity = 70) {
   return hammerOn(note, velocity);
 }
 
 /**
+ * Set palm mute (0-1) - affects ALL currently playing and future notes
+ */
+export function setPalmMute(amount) {
+  const prevValue = globalPalmMute;
+  globalPalmMute = Math.max(0, Math.min(1, amount));
+  console.log('[Guitar] ✓ Palm mute changed:', prevValue, '->', globalPalmMute);
+  
+  // Update all active voices immediately
+  let activeCount = 0;
+  for (const voice of voices) {
+    if (voice.active) {
+      voice.updateFilters();
+      activeCount++;
+    }
+  }
+  console.log('[Guitar] Updated filters on', activeCount, 'active voices');
+}
+
+/**
+ * Get palm mute amount
+ */
+export function getPalmMute() {
+  return globalPalmMute;
+}
+
+/**
+ * Set pickup position
+ */
+export function setPickupPosition(position) {
+  if (!['bridge', 'middle', 'neck'].includes(position)) {
+    position = 'bridge';
+  }
+  globalPickup = position;
+  console.log('[Guitar] Pickup:', position);
+  
+  // Update all active voices
+  for (const voice of voices) {
+    if (voice.active) {
+      voice.updateFilters();
+    }
+  }
+}
+
+/**
+ * Set tone (0-1)
+ */
+export function setTone(value) {
+  globalTone = Math.max(0, Math.min(1, value));
+  
+  // Update all active voices
+  for (const voice of voices) {
+    if (voice.active) {
+      voice.updateFilters();
+    }
+  }
+}
+
+/**
+ * Set pick position
+ */
+export function setPickPosition(position) {
+  globalPickPosition = Math.max(0.05, Math.min(0.35, position));
+}
+
+/**
+ * Set pick hardness
+ */
+export function setPickHardness(hardness) {
+  globalPickHardness = Math.max(0, Math.min(1, hardness));
+}
+
+/**
  * Set guitar mode
  */
 export function setGuitarMode(mode) {
-  if (mode !== GUITAR_MODE_ELECTRIC && mode !== GUITAR_MODE_NYLON) {
-    return;
-  }
+  if (mode !== GUITAR_MODE_ELECTRIC && mode !== GUITAR_MODE_NYLON) return;
   
   stopAllNotes();
   currentGuitarMode = mode;
   
-  // Adjust effects for mode
   if (mode === GUITAR_MODE_NYLON) {
-    if (distortion) distortion.wet.value = 0;
-    if (chorus) chorus.wet.value = 0.1;
-    if (reverb) reverb.wet.value = 0.35;
-    if (eq) {
-      eq.low.value = 3;
-      eq.mid.value = 0;
-      eq.high.value = -2;
-    }
+    globalPickHardness = 0.35;
+    globalPickup = 'neck';
+    globalTone = 0.45;
   } else {
-    if (distortion) distortion.wet.value = 0.3;
-    if (chorus) chorus.wet.value = 0.2;
-    if (reverb) reverb.wet.value = 0.2;
-    if (eq) {
-      eq.low.value = 0;
-      eq.mid.value = 2;
-      eq.high.value = 1;
-    }
+    globalPickHardness = 0.7;
+    globalPickup = 'bridge';
+    globalTone = 0.7;
   }
-  
-  console.log(`[Guitar] Mode switched to: ${mode}`);
 }
 
 export function getGuitarMode() {
   return currentGuitarMode;
 }
 
+/**
+ * Stop all notes
+ */
 export function stopAllNotes() {
-  activeVoices.forEach((voice, note) => {
-    releaseNote(note);
-  });
-  activeVoices.clear();
+  for (const voice of voices) {
+    voice.stop();
+  }
+  activeVoiceMap.clear();
 }
 
-export function setVolume(volume) {
-  masterVolume = Math.max(0, Math.min(1, volume));
+/**
+ * Set volume
+ */
+export function setVolume(vol) {
+  masterVolume = Math.max(0, Math.min(1, vol));
   if (masterGain) {
     masterGain.gain.value = masterVolume;
   }
@@ -466,39 +682,17 @@ export function getVolume() {
   return masterVolume;
 }
 
-export function setDistortion(amount) {
-  if (distortion) {
-    distortion.distortion = Math.max(0, Math.min(1, amount));
-  }
-}
-
-export function setReverb(amount) {
-  if (reverb) {
-    reverb.wet.value = Math.max(0, Math.min(1, amount));
-  }
-}
-
+/**
+ * Cleanup
+ */
 export function dispose() {
   stopAllNotes();
-  
-  voicePool.forEach(voice => {
-    voice.osc?.dispose();
-    voice.osc2?.dispose();
-    voice.filter?.dispose();
-    voice.envelope?.dispose();
-    voice.gain?.dispose();
-    voice.vibratoLFO?.dispose();
-  });
-  voicePool = [];
-  
-  compressor?.dispose();
-  eq?.dispose();
-  chorus?.dispose();
-  distortion?.dispose();
-  delay?.dispose();
-  reverb?.dispose();
-  masterGain?.dispose();
-  
+  for (const voice of voices) {
+    voice.dispose();
+  }
+  voices = [];
+  activeVoiceMap.clear();
+  masterGain?.disconnect();
   isInitialized = false;
 }
 
@@ -506,7 +700,56 @@ export function isReady() {
   return isInitialized;
 }
 
-// Export for advanced control
+// Compatibility exports
+export function setDistortion(amount) {}
+export function setReverb(amount) {}
 export function getActiveVoice(note) {
-  return activeVoices.get(note);
+  const idx = activeVoiceMap.get(note);
+  return idx !== undefined ? voices[idx] : null;
+}
+export function getParams() {
+  return {
+    palmMute: globalPalmMute,
+    tone: globalTone,
+    pickup: globalPickup,
+    pickPosition: globalPickPosition,
+    pickHardness: globalPickHardness
+  };
+}
+
+// Debug helper - expose to window for console debugging
+if (typeof window !== 'undefined') {
+  window.__guitarDebug = {
+    getState: () => ({
+      isInitialized,
+      voiceCount: voices.length,
+      activeVoiceMapSize: activeVoiceMap.size,
+      activeVoiceMapKeys: Array.from(activeVoiceMap.keys()),
+      globalPalmMute,
+      globalTone,
+      globalPickup,
+      voices: voices.map((v, i) => ({
+        index: i,
+        active: v.active,
+        midiNote: v.midiNote,
+        baseFreq: v.baseFreq,
+        bendSemitones: v.bendSemitones,
+        vibratoDepth: v.vibratoDepth,
+        amplitude: v.amplitude
+      }))
+    }),
+    testBend: (note, semitones) => {
+      console.log('Testing bend on note', note, 'by', semitones, 'semitones');
+      bendNote(note, semitones);
+    },
+    testPalmMute: (amount) => {
+      console.log('Testing palm mute:', amount);
+      setPalmMute(amount);
+    },
+    testVibrato: (note, depth, rate) => {
+      console.log('Testing vibrato on note', note);
+      applyVibrato(note, depth, rate);
+    }
+  };
+  console.log('[Guitar] Debug helper available at window.__guitarDebug');
 }

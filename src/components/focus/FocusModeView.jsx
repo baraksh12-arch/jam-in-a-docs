@@ -28,7 +28,16 @@ import GuitarNeckView from './GuitarNeckView';
 import FloatingChatWidget from './FloatingChatWidget';
 import FloatingCrowdWidget from './FloatingCrowdWidget';
 import { Slider } from '@/components/ui/slider';
-import { bendNote, applyVibrato, slideToNote, hammerOn } from '@/lib/instruments/guitar';
+import { 
+  bendNote, 
+  applyVibrato, 
+  slideToNote, 
+  hammerOn,
+  setPalmMute,
+  setPickPosition,
+  setPickupPosition,
+  setTone
+} from '@/lib/instruments/guitar';
 
 // Instrument mode configurations
 const INSTRUMENT_MODES = {
@@ -296,6 +305,31 @@ export default function FocusModeView({
     handleNoteOn(note, velocity);
   }, [instrument, handleNoteOn]);
 
+  // Guitar-specific parameter handlers
+  const handlePalmMuteChange = useCallback((amount) => {
+    if (instrument === 'GUITAR') {
+      setPalmMute(amount);
+    }
+  }, [instrument]);
+
+  const handlePickPositionChange = useCallback((position) => {
+    if (instrument === 'GUITAR') {
+      setPickPosition(position);
+    }
+  }, [instrument]);
+
+  const handlePickupChange = useCallback((position) => {
+    if (instrument === 'GUITAR') {
+      setPickupPosition(position);
+    }
+  }, [instrument]);
+
+  const handleToneChange = useCallback((value) => {
+    if (instrument === 'GUITAR') {
+      setTone(value);
+    }
+  }, [instrument]);
+
   const handleVolumeChange = (value) => {
     const newVolume = value[0];
     setVolume(newVolume);
@@ -397,6 +431,10 @@ export default function FocusModeView({
             onVibrato={handleVibrato}
             onSlide={handleSlide}
             onHammerOn={handleHammerOn}
+            onPalmMuteChange={handlePalmMuteChange}
+            onPickPositionChange={handlePickPositionChange}
+            onPickupChange={handlePickupChange}
+            onToneChange={handleToneChange}
           />
         );
       

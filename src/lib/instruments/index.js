@@ -37,21 +37,35 @@ export async function initAllInstruments() {
         Tone.Transport.start();
       }
 
-      // Initialize all instruments in parallel for faster loading
-      await Promise.all([
+      // Initialize all instruments in parallel - use allSettled so one failure doesn't block others
+      const results = await Promise.allSettled([
         drums.initDrums(),
         piano.initPiano(),
         bass.initBass(),
         guitar.initGuitar(),
       ]);
 
-      // Wait for all samples to be loaded
-      await Tone.loaded();
+      // Log individual instrument status
+      const instrumentNames = ['Drums', 'Piano', 'Bass', 'Guitar'];
+      results.forEach((result, index) => {
+        if (result.status === 'rejected') {
+          console.warn(`[InstrumentManager] ${instrumentNames[index]} init failed (non-critical):`, result.reason);
+        } else {
+          console.log(`[InstrumentManager] ${instrumentNames[index]} ready`);
+        }
+      });
+
+      // Wait for all samples to be loaded (non-critical if some fail)
+      try {
+        await Tone.loaded();
+      } catch (e) {
+        console.warn('[InstrumentManager] Some samples failed to load:', e);
+      }
 
       isInitialized = true;
-      console.log('[InstrumentManager] All instruments initialized and ready');
+      console.log('[InstrumentManager] Instruments initialized (some may have fallbacks)');
     } catch (error) {
-      console.error('[InstrumentManager] Failed to initialize instruments:', error);
+      console.error('[InstrumentManager] Critical initialization failure:', error);
       throw error;
     }
   })();

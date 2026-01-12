@@ -32,7 +32,16 @@ import GuitarNeckView from './GuitarNeckView';
 import BandMemberIndicators from './BandMemberIndicators';
 import CameraStrip from './CameraStrip';
 import CompactChatBar from './CompactChatBar';
-import { bendNote, applyVibrato, slideToNote, hammerOn } from '@/lib/instruments/guitar';
+import { 
+  bendNote, 
+  applyVibrato, 
+  slideToNote, 
+  hammerOn,
+  setPalmMute,
+  setPickPosition,
+  setPickupPosition,
+  setTone
+} from '@/lib/instruments/guitar';
 
 /**
  * MobileFocusView - Premium Mobile Instrument Experience
@@ -295,6 +304,31 @@ export default function MobileFocusView({
     handleNoteOn(note, velocity);
   }, [instrument, handleNoteOn]);
 
+  // Guitar-specific parameter handlers
+  const handlePalmMuteChange = useCallback((amount) => {
+    if (instrument === 'GUITAR') {
+      setPalmMute(amount);
+    }
+  }, [instrument]);
+
+  const handlePickPositionChange = useCallback((position) => {
+    if (instrument === 'GUITAR') {
+      setPickPosition(position);
+    }
+  }, [instrument]);
+
+  const handlePickupChange = useCallback((position) => {
+    if (instrument === 'GUITAR') {
+      setPickupPosition(position);
+    }
+  }, [instrument]);
+
+  const handleToneChange = useCallback((value) => {
+    if (instrument === 'GUITAR') {
+      setTone(value);
+    }
+  }, [instrument]);
+
   // Volume control
   const handleVolumeChange = (value) => {
     const newVolume = value[0];
@@ -425,6 +459,10 @@ export default function MobileFocusView({
             onVibrato={handleVibrato}
             onSlide={handleSlide}
             onHammerOn={handleHammerOn}
+            onPalmMuteChange={handlePalmMuteChange}
+            onPickPositionChange={handlePickPositionChange}
+            onPickupChange={handlePickupChange}
+            onToneChange={handleToneChange}
           />
         );
       

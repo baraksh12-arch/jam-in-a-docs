@@ -615,17 +615,32 @@ export function useAudioEngine() {
   /**
    * Main playNote function (immediate playback)
    * Uses Tone.js if available, otherwise falls back to raw Web Audio API
+   * 
+   * @param {string} instrument - Instrument name
+   * @param {number|string} note - MIDI note (0-127) or drum pad ID
+   * @param {number} velocity - MIDI velocity (0-127)
+   * @param {Object} [options] - Optional parameters for physics-based synthesis
+   * @param {number} [options.position] - Hit position for drums (0=center, 1=edge)
+   * @param {string} [options.articulation] - Articulation type for drums
    */
-  const playNote = useCallback((instrument, note, velocity = 100) => {
+  const playNote = useCallback((instrument, note, velocity = 100, options = {}) => {
     resumeAudioContext();
 
     // Try Tone.js path first (if enabled and ready)
     if (useToneJsRef.current && toneInstrumentsReadyRef.current) {
       try {
+        // For drums, pass the options through to the physics engine
         if (instrument === 'DRUMS') {
-          console.log(`[AudioEngine] playNote DRUMS: ${note}`);
+          // Import drums module to call triggerNote with options
+          const drums = ToneInstruments.drums;
+          if (drums && drums.triggerNote) {
+            drums.triggerNote(note, undefined, velocity, options);
+          } else {
+            ToneInstruments.triggerNote(instrument, note, undefined, velocity);
+          }
+        } else {
+          ToneInstruments.triggerNote(instrument, note, undefined, velocity);
         }
-        ToneInstruments.triggerNote(instrument, note, undefined, velocity);
         const noteKey = `${instrument}_${note}`;
         activeNotesRef.current.set(noteKey, { instrument, note });
         return; // Exit early - Tone.js handled it

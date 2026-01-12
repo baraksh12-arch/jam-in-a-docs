@@ -5,7 +5,7 @@ import { Volume2, VolumeX } from 'lucide-react';
 import DrumPad from './DrumPad';
 import PianoKeyboard from './PianoKeyboard';
 import { setBassMode, getBassMode, BASS_MODE_SYNTH, BASS_MODE_SAMPLED } from '@/lib/instruments/bass';
-import { setDrumKitMode, getDrumKitMode, DRUM_KIT_MODE_SAMPLED, DRUM_KIT_MODE_ELECTRONIC } from '@/lib/instruments/drums';
+import { setDrumKitMode, getDrumKitMode, DRUM_KIT_MODE_SAMPLED, DRUM_KIT_MODE_ELECTRONIC, DRUM_KIT_MODE_PHYSICS } from '@/lib/instruments/drums';
 
 const INSTRUMENT_CONFIG = {
   DRUMS: {
@@ -80,9 +80,18 @@ const InstrumentPanel = forwardRef(function InstrumentPanel({
     }
   }, [onActivity]);
 
-  const handleNotePlay = (note) => {
-    audioEngine.playNote(instrument, note, 100);
-    sendNote(instrument, note, 'NOTE_ON', 100);
+  const handleNotePlay = (note, velocity = 0.8, position = 0.5) => {
+    // Convert velocity from 0-1 to MIDI 0-127
+    const midiVelocity = Math.round(velocity * 127);
+    
+    // For drums, pass position through options for physics-based synthesis
+    if (instrument === 'DRUMS') {
+      audioEngine.playNote(instrument, note, midiVelocity, { position });
+    } else {
+      audioEngine.playNote(instrument, note, midiVelocity);
+    }
+    
+    sendNote(instrument, note, 'NOTE_ON', midiVelocity);
 
     // Local activity indicator (useNoteEvents will also trigger via callback for consistency)
     setActivity(true);
@@ -192,8 +201,19 @@ const InstrumentPanel = forwardRef(function InstrumentPanel({
         
         {/* Drum kit mode toggle - only show for DRUMS instrument */}
         {instrument === 'DRUMS' && player && (
-          <div className="mt-2 flex items-center gap-3 text-xs">
-            <span className="text-white/70">Drums:</span>
+          <div className="mt-2 flex items-center gap-2 text-xs flex-wrap">
+            <span className="text-white/70">Kit:</span>
+            <label className="flex items-center gap-1 cursor-pointer">
+              <input
+                type="radio"
+                value={DRUM_KIT_MODE_PHYSICS}
+                checked={drumKitMode === DRUM_KIT_MODE_PHYSICS}
+                onChange={handleDrumKitModeChange}
+                className="cursor-pointer"
+                disabled={!isMyInstrument}
+              />
+              <span className="text-white/80">Synth</span>
+            </label>
             <label className="flex items-center gap-1 cursor-pointer">
               <input
                 type="radio"
@@ -214,7 +234,7 @@ const InstrumentPanel = forwardRef(function InstrumentPanel({
                 className="cursor-pointer"
                 disabled={!isMyInstrument}
               />
-              <span className="text-white/80">Electronic</span>
+              <span className="text-white/80">808</span>
             </label>
           </div>
         )}
